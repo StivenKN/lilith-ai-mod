@@ -43,7 +43,10 @@ function openPath(target: string): void {
         ? ["open", target]
         : ["xdg-open", target];
   try {
-    Bun.spawn(command, { stdout: "ignore", stderr: "ignore", windowsHide: true });
+    // Never `windowsHide` here: rundll32/explorer are GUI programs (no console flash), and a hidden
+    // launch is passed on to the browser they start, which then opens invisible.
+    Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+    log.info(`opened ${target}`);
   } catch (error) {
     log.warn(`could not open ${target}: ${errorMessage(error)}`);
   }

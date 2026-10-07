@@ -229,8 +229,8 @@ internal static class TrayMenu
             if (!TrayReady()) return "waiting for the tray menu";
 
             // Callbacks arrive on a native thread; the handlers only post work elsewhere.
-            _talk ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(onTalk);
-            _settings ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(onSettings);
+            _talk ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(onTalk) ?? throw new InvalidOperationException("could not convert the tray callback");
+            _settings ??= DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(onSettings) ?? throw new InvalidOperationException("could not convert the tray callback");
             AddItems(strings.TrayTalk, strings.TraySettings, _talk, _settings);
             _labels = labels;
             _countAfterAdd = MenuItemCount();

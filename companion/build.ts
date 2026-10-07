@@ -30,7 +30,7 @@ if (onWindows && !host) {
     "--windows-icon=../assets/icon.ico",
     "--windows-title=Lilith AI Companion",
     "--windows-publisher=Lilith AI Companion contributors",
-    `--windows-version=${pkg.version}.0`,
+    `--windows-version=${pkg.version.split("-")[0]}.0`, // Windows wants 4 numbers: "0.1.0-beta.1" → "0.1.0.0"
     "--windows-description=AI companion for The NOexistenceN of Lilith",
   );
 }

@@ -31,7 +31,7 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
 ## Instalación
 
 1. Cierra el juego.
-2. Descarga `LilithAICompanion-<versión>.zip` desde la página de versiones y **extráelo** en una carpeta.
+2. Descarga `LilithAICompanion-<versión>.zip` desde [Releases](https://github.com/StivenKN/lilith-ai-mod/releases) y **extráelo** en una carpeta.
 3. Abre `LilithAICompanion.exe`. Se abre una página en tu navegador que:
    - encuentra el juego en tu biblioteca de Steam,
    - instala BepInEx (el cargador de mods) y el mod,

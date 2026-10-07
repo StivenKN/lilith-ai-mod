@@ -38,6 +38,11 @@ jobs:
       - name: Build LilithAICompanion.exe
         run: bun build.ts
 
+      - name: Build the game plugin (pinned BepInEx + reference stand-ins, no game needed)
+        run: |
+          bun scripts/pinned.ts bepinex dist/bepinex
+          dotnet build ../plugin/LilithAICompanion.csproj -c Release -p:BepInExDir="${{ github.workspace }}/companion/dist/bepinex" -p:UseReferenceStubs=true
+
       - name: Plugin bridge against the real exe (UTF-8, shutdown, job object)
         shell: pwsh
         run: |
@@ -50,5 +55,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LilithAICompanion-exe
-          path: companion/dist/LilithAICompanion.exe
+          name: LilithAICompanion-build
+          path: |
+            companion/dist/LilithAICompanion.exe
+            plugin/bin/Release/net6.0/LilithAICompanion.dll

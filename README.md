@@ -26,7 +26,7 @@ answers in her own speech bubble, in character, in your language, and remembers 
 ## Install
 
 1. Close the game.
-2. Download `LilithAICompanion-<version>.zip` from Releases and **extract** it.
+2. Download `LilithAICompanion-<version>.zip` from [Releases](https://github.com/StivenKN/lilith-ai-mod/releases) and **extract** it.
 3. Open `LilithAICompanion.exe`. A page opens in your browser that finds the game in your Steam
    library, installs BepInEx and the mod, offers to turn off other AI mods that would clash, and
    helps you pick and test an AI.
@@ -78,7 +78,7 @@ bun build.ts                                    # dist/LilithAICompanion.exe
 bun scripts/release.ts --plugin <path/to/LilithAICompanion.dll>
 ```
 
-The plugin builds only against a real game install; see [docs/BUILDING.md](docs/BUILDING.md).
+The plugin builds with or without the game installed; releases are cut by pushing a version tag. See [docs/BUILDING.md](docs/BUILDING.md).
 How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### Credits

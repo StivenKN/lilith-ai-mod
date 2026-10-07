@@ -1,0 +1,24 @@
+<Project>
+  <!--
+    Reference-only stand-ins for the interop assemblies BepInEx generates from the game.
+    They declare exactly (and only) the game/Unity API the plugin calls, so the plugin can be
+    compiled without the game installed (CI, releases). They are never shipped: at runtime the
+    plugin binds by assembly, type and member name to the real interop DLLs in BepInEx\interop.
+    Version 0.0.0.0 so any real assembly version satisfies the reference.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyVersion>0.0.0.0</AssemblyVersion>
+    <FileVersion>0.0.0.0</FileVersion>
+    <Version>0.0.0</Version>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS0626;CS8618</NoWarn>
+    <CoreDir Condition="'$(CoreDir)' == ''">$(BepInExDir)\BepInEx\core</CoreDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(CoreDir)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
