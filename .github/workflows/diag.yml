@@ -1,0 +1,27 @@
+name: Diag
+on:
+  push:
+    branches: ["diag/**"]
+jobs:
+  setup-mode:
+    runs-on: windows-latest
+    steps:
+      - name: Run released exe in setup mode with ASCII and non-ASCII data dirs
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/StivenKN/lilith-ai-mod/releases/download/v0.1.0-beta.2/LilithAICompanion-0.1.0-beta.2.zip -OutFile r.zip
+          tar -xf r.zip
+          $exe = (Resolve-Path "LilithAICompanion-0.1.0-beta.2/LilithAICompanion.exe").Path
+          foreach ($dir in @("$env:RUNNER_TEMP\ascii\LilithAICompanion", "$env:RUNNER_TEMP\Elcñor Guz\AppData\LilithAICompanion")) {
+            Write-Host "=== $dir"
+            $env:LILITH_AI_DATA_DIR = $dir
+            $p = Start-Process -PassThru -FilePath $exe -ArgumentList "--no-open" -RedirectStandardOutput "$env:RUNNER_TEMP\out.txt" -RedirectStandardError "$env:RUNNER_TEMP\err.txt"
+            Start-Sleep -Seconds 8
+            Write-Host "running: $(-not $p.HasExited) exit: $($p.ExitCode)"
+            Get-Content "$env:RUNNER_TEMP\out.txt" -ErrorAction SilentlyContinue
+            Get-Content "$env:RUNNER_TEMP\err.txt" -ErrorAction SilentlyContinue
+            Get-Content "$dir\logs\lilith-ai.log" -ErrorAction SilentlyContinue
+            try { (Invoke-WebRequest http://127.0.0.1:47321/api/ping -UseBasicParsing -TimeoutSec 3).Content } catch { Write-Host "ping failed: $_" }
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Start-Sleep -Seconds 1
+          }
