@@ -71,6 +71,14 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag.TrimStart("v")
+          $zip = "dist/release/LilithAICompanion-$version.zip"
+          # The release may already exist (published by hand while this run was queued): refresh it.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --clobber
+            gh release edit $tag --notes-file dist/release/RELEASE-NOTES.md
+            exit $LASTEXITCODE
+          }
           $flags = @()
           if ($tag.Contains("-")) { $flags += "--prerelease" }
-          gh release create $tag "dist/release/LilithAICompanion-$version.zip" --title "Lilith AI Companion $version" --notes-file dist/release/RELEASE-NOTES.md @flags
+          gh release create $tag $zip --title "Lilith AI Companion $version" --notes-file dist/release/RELEASE-NOTES.md @flags
