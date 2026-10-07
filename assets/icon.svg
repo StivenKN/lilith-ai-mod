@@ -1,4 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#d97706"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">LA</text>
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a2f63"/>
+      <stop offset="1" stop-color="#1a1531"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#night)"/>
+  <path d="M30 13l4.6 12.4L47 30l-12.4 4.6L30 47l-4.6-12.4L13 30l12.4-4.6z" fill="#ffffff"/>
+  <circle cx="47" cy="47" r="6" fill="#f06a8a"/>
+  <circle cx="17" cy="16" r="1.4" fill="#ffffffaa"/>
+  <circle cx="51" cy="15" r="1" fill="#ffffff88"/>
 </svg>

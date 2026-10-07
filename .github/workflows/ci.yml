@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    # The mod only runs on Windows, so everything is tested there.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: companion
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Tests
+        run: bun test
+
+      - name: Build LilithAICompanion.exe
+        run: bun build.ts
+
+      - name: Plugin bridge against the real exe (UTF-8, shutdown, job object)
+        shell: pwsh
+        run: |
+          $mock = Start-Process -PassThru -NoNewWindow -FilePath bun -ArgumentList "scripts/mock-llm.ts", "11555"
+          Start-Sleep -Seconds 2
+          dotnet run --project ../plugin/harness -c Release -- dist/LilithAICompanion.exe http://127.0.0.1:11555/v1
+          $code = $LASTEXITCODE
+          Stop-Process -Id $mock.Id -Force
+          exit $code
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LilithAICompanion-exe
+          path: companion/dist/LilithAICompanion.exe

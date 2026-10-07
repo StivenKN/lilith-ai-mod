@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Game plugin for BepInEx 6 (IL2CPP). It compiles against interop assemblies that BepInEx
+    generates from your installed game on its first launch, so build it on a PC that has the game:
+
+      dotnet build -c Release -p:GameDir="C:\Program Files (x86)\Steam\steamapps\common\The NOexistenceN of Lilith"
+
+    or put <GameDir> in a git-ignored Directory.Build.props next to this file. See docs/BUILDING.md.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>LilithAICompanion</AssemblyName>
+    <RootNamespace>LilithAICompanion</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <DebugType>embedded</DebugType>
+    <Version>0.1.0</Version>
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\The NOexistenceN of Lilith</GameDir>
+    <CoreDir>$(GameDir)\BepInEx\core</CoreDir>
+    <InteropDir>$(GameDir)\BepInEx\interop</InteropDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="harness\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core"><HintPath>$(CoreDir)\BepInEx.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(CoreDir)\BepInEx.Unity.IL2CPP.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(CoreDir)\Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(InteropDir)\Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(InteropDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(InteropDir)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <Target Name="CheckGameInterop" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(InteropDir)\Assembly-CSharp.dll')"
+           Text="Game interop assemblies not found in $(InteropDir). Install BepInEx into the game, launch the game once (BepInEx generates them), then build with -p:GameDir=&quot;your game folder&quot;." />
+  </Target>
+
+</Project>

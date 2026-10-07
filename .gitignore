@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# Local plugin build settings (game path)
+plugin/Directory.Build.props
+plugin/bin/
+plugin/obj/
+plugin/harness/bin/
+plugin/harness/obj/
