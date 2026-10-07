@@ -1,9 +1,10 @@
 # Building
 
-There are two parts:
-- **The companion** (`companion/`, TypeScript) builds anywhere.
-- **The plugin** (`plugin/`, C#) builds only on a Windows PC with the game installed, because it
-  compiles against interop DLLs that BepInEx generates from your copy of the game.
+Two parts, and both build on any OS:
+- **The companion** (`companion/`, TypeScript)
+- **The plugin** (`plugin/`, C#). It can build against your installed game, which is best while
+  developing, or without the game, using the pinned BepInEx and small reference stand-ins for the
+  game's API. CI and releases use the second mode.
 
 ## Companion
 
@@ -32,34 +33,51 @@ Set `LILITH_AI_DATA_DIR` to a temporary folder to keep test settings away from y
 
 ## Plugin
 
-Requirements: Windows, the .NET 8 SDK, and the game installed through Steam.
+You need the .NET 8 SDK.
 
-1. Give the game BepInEx and run it once, so BepInEx generates `BepInEx\interop\*.dll`. The easiest
-   way is to run a release's `LilithAICompanion.exe` and install. Or extract the pinned BepInEx build
-   (URL and SHA-256 in `companion/scripts/release.ts`) into the game folder. Then start the game and
-   wait until it's fully on screen; the first launch takes 1–3 minutes.
-2. Point the build at the game. Either pass it on the command line:
+**Without the game** (what CI does):
+
+```sh
+cd companion && bun scripts/pinned.ts bepinex dist/bepinex && cd ..
+dotnet build plugin/LilithAICompanion.csproj -c Release -p:BepInExDir="$PWD/companion/dist/bepinex" -p:UseReferenceStubs=true
+```
+
+`plugin/reference/` holds reference-only stand-ins for `Assembly-CSharp`, `UnityEngine.CoreModule` and
+`Il2Cppmscorlib`. Each declares exactly the members the plugin calls, nothing more.
+- They are never shipped.
+- In the game, the plugin binds by assembly, type and member name to the real interop DLLs that
+  BepInEx generated.
+- If the game no longer has a member, only the capability that uses it turns off, and the reason
+  appears in the log and the dashboard's Game tab.
+
+**Against your installed game**, which catches API changes at compile time:
+1. Install the mod once (or extract the pinned BepInEx into the game folder).
+2. Start the game until it's fully on screen, so BepInEx generates `BepInEx\interop\*.dll`. The first
+   launch takes 1–3 minutes.
+3. Build against the game folder. Either pass it on the command line:
 
    ```sh
-   cd plugin
-   dotnet build -c Release -p:GameDir="C:\Program Files (x86)\Steam\steamapps\common\The NOexistenceN of Lilith"
+   dotnet build plugin/LilithAICompanion.csproj -c Release -p:GameDir="C:\Program Files (x86)\Steam\steamapps\common\The NOexistenceN of Lilith"
    ```
 
-   or create a `plugin/Directory.Build.props` (it's git-ignored):
+   or create a git-ignored `plugin/Directory.Build.props`:
 
    ```xml
    <Project><PropertyGroup><GameDir>D:\SteamLibrary\steamapps\common\The NOexistenceN of Lilith</GameDir></PropertyGroup></Project>
    ```
-3. The output is `plugin/bin/Release/net6.0/LilithAICompanion.dll`.
 
-### If it doesn't compile
+The output is `plugin/bin/Release/net6.0/LilithAICompanion.dll`.
 
-`plugin/src/GameApi.cs` is the only file that names game types.
-- The members it uses come from what the community mods used in game builds 24273498+ (1.0.x–1.1.0).
-- If the game renamed something, the compiler error points at exactly one method. Fix it there and
-  keep the method tiny.
-- `IsBusy` is the fallback for `IsBusyOrAwaitingResponse`. If either no longer exists, delete that
-  method and its use.
+### When the game updates
+
+`plugin/src/GameApi.cs` is the only file that uses game types, and `reference/Assembly-CSharp/Game.cs`
+mirrors exactly those members.
+1. Build against the game. If something was renamed, the compiler error points at one tiny method.
+2. Fix that method.
+3. Update the stand-in to match, so CI builds stay in sync.
+
+`IsBusy` is the fallback for `IsBusyOrAwaitingResponse`. If either is gone, delete that method and
+its use.
 
 ### Quick test without a release
 
@@ -83,32 +101,39 @@ dotnet run --project plugin/harness -c Release -- companion/dist/LilithAICompani
 
 ## Release
 
-On the Windows PC that built the plugin:
+Releases are built and published by `.github/workflows/release.yml` on Windows, with no game needed:
+
+1. Bump the versions:
+   - `companion/package.json` (the release version, e.g. `0.2.0` or `0.2.0-beta.1`);
+   - `plugin/LilithAICompanion.csproj` `<Version>` and `Plugin.Version` in `plugin/src/Plugin.cs`
+     (plain `x.y.z`).
+   - If the protocol changed, also bump `PROTOCOL_VERSION` / `Protocol.Version` on both sides.
+2. Merge to `main`.
+3. Tag and push. The tag must match `package.json`:
+
+   ```sh
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+
+4. The workflow then:
+   - runs the tests;
+   - builds the exe and the plugin;
+   - runs the bridge harness;
+   - assembles `LilithAICompanion-<version>.zip` with the pinned, checksum-verified BepInEx and
+     Unity libraries;
+   - publishes the GitHub release with Spanish and English install notes.
+
+   Tags with a `-` (e.g. `-beta.1`) are published as pre-releases.
+
+To build the zip locally instead:
 
 ```sh
 cd companion
 bun build.ts
-bun scripts/release.ts --plugin ..\plugin\bin\Release\net6.0\LilithAICompanion.dll
+bun scripts/release.ts --plugin ../plugin/bin/Release/net6.0/LilithAICompanion.dll
 ```
 
-This downloads the pinned BepInEx and Unity libraries and refuses them if the checksums don't match.
-It then writes `dist/release/LilithAICompanion-<version>.zip`, laid out as:
-
-```
-LilithAICompanion-<version>/
-  LilithAICompanion.exe
-  LEEME - README.txt
-  payload/bepinex/ · payload/unity-libs/2021.3.45.zip · payload/BepInEx.cfg · payload/plugin/LilithAICompanion.dll · payload/VERSION
-```
-
-Before publishing:
+Before announcing a release:
 1. Run [WINDOWS-SMOKE-TEST.md](WINDOWS-SMOKE-TEST.md).
 2. Check the exe on VirusTotal. Unsigned exes are often flagged by machine-learning heuristics.
 3. Ideally, code-sign it and submit it to Microsoft's false-positive portal.
-
-Bump the version in three places:
-- `companion/package.json`
-- `plugin/LilithAICompanion.csproj` (`<Version>`)
-- `Plugin.Version` in `plugin/src/Plugin.cs`
-
-If the protocol changes, bump `PROTOCOL_VERSION` / `Protocol.Version` on both sides.

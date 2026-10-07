@@ -1,0 +1,76 @@
+name: Release
+
+# Push a tag that matches companion/package.json, e.g. `git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1`.
+# Tags with a "-" (beta, rc) are published as pre-releases.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: companion
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Tag matches package.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} doesn't match package.json version $version" }
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and test
+        run: |
+          pnpm exec tsc --noEmit
+          bun test
+
+      - name: Build LilithAICompanion.exe
+        run: bun build.ts
+
+      - name: Build the game plugin (pinned BepInEx + reference stand-ins, no game needed)
+        run: |
+          bun scripts/pinned.ts bepinex dist/bepinex
+          dotnet build ../plugin/LilithAICompanion.csproj -c Release -p:BepInExDir="${{ github.workspace }}/companion/dist/bepinex" -p:UseReferenceStubs=true
+
+      - name: Plugin bridge against the real exe
+        shell: pwsh
+        run: |
+          $mock = Start-Process -PassThru -NoNewWindow -FilePath bun -ArgumentList "scripts/mock-llm.ts", "11555"
+          Start-Sleep -Seconds 2
+          dotnet run --project ../plugin/harness -c Release -- dist/LilithAICompanion.exe http://127.0.0.1:11555/v1
+          $code = $LASTEXITCODE
+          Stop-Process -Id $mock.Id -Force
+          exit $code
+
+      - name: Assemble the release zip
+        run: bun scripts/release.ts --plugin ../plugin/bin/Release/net6.0/LilithAICompanion.dll
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $flags = @()
+          if ($tag.Contains("-")) { $flags += "--prerelease" }
+          gh release create $tag "dist/release/LilithAICompanion-$version.zip" --title "Lilith AI Companion $version" --notes-file dist/release/RELEASE-NOTES.md @flags
