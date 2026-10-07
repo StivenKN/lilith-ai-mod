@@ -7,7 +7,7 @@ import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Brain } from "./brain.ts";
 import { startBridge } from "./bridge.ts";
-import { ConfigStore, writeAtomic } from "./config.ts";
+import { ConfigStore, readTextFile, writeAtomic } from "./config.ts";
 import { errorMessage, Logger } from "./log.ts";
 import { Memory } from "./memory.ts";
 import { dataPaths } from "./paths.ts";
@@ -55,7 +55,9 @@ function openPath(target: string): void {
 /** If another instance already serves the dashboard, open it there instead of starting twice. */
 async function handOffToRunningInstance(): Promise<boolean> {
   try {
-    const instance = (await Bun.file(paths.instance).json()) as { pid: number; port: number; loginUrl: string };
+    const text = await readTextFile(paths.instance);
+    if (text === null) return false;
+    const instance = JSON.parse(text) as { pid: number; port: number; loginUrl: string };
     process.kill(instance.pid, 0);
     const ping = (await (await fetch(`http://127.0.0.1:${instance.port}/api/ping`, { signal: AbortSignal.timeout(1500) })).json()) as { app?: string };
     if (ping.app !== APP_NAME) return false;
@@ -75,6 +77,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  log.info("loading settings and memory");
   const config = await ConfigStore.load(paths.config, (message) => log.warn(message));
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
 

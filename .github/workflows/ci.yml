@@ -38,6 +38,20 @@ jobs:
       - name: Build LilithAICompanion.exe
         run: bun build.ts
 
+      - name: Setup mode starts and serves the dashboard (what players double-click)
+        shell: pwsh
+        run: |
+          $env:LILITH_AI_DATA_DIR = "$env:RUNNER_TEMP\Elcñor Guz\LilithAICompanion"
+          $p = Start-Process -PassThru -FilePath dist/LilithAICompanion.exe -ArgumentList "--no-open"
+          $ok = $false
+          foreach ($i in 1..20) {
+            Start-Sleep -Milliseconds 500
+            try { if ((Invoke-WebRequest http://127.0.0.1:47321/api/ping -UseBasicParsing -TimeoutSec 2).Content -match "lilith-ai-companion") { $ok = $true; break } } catch {}
+          }
+          Get-Content "$env:LILITH_AI_DATA_DIR\logs\lilith-ai.log" -ErrorAction SilentlyContinue
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } else { Write-Host "exited with $($p.ExitCode)" }
+          if (-not $ok) { throw "setup mode did not serve the dashboard" }
+
       - name: Build the game plugin (pinned BepInEx + reference stand-ins, no game needed)
         run: |
           bun scripts/pinned.ts bepinex dist/bepinex
