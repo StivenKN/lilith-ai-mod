@@ -4,7 +4,8 @@
 // bad loop can't feed itself.
 
 import { z } from "zod";
-import { writeAtomic } from "./config.ts";
+import { readTextFile, writeAtomic } from "./config.ts";
+import { copyFile } from "node:fs/promises";
 import { isRepeat } from "./reply.ts";
 import type { ChatTurn } from "./providers/types.ts";
 
@@ -37,16 +38,16 @@ export class Memory {
   ) {}
 
   static async load(path: string, onWarning: (message: string) => void = () => {}): Promise<Memory> {
-    const file = Bun.file(path);
-    if (await file.exists()) {
+    const text = await readTextFile(path).catch(() => null);
+    if (text !== null) {
       try {
-        const parsed = MemoryFile.safeParse(await file.json());
+        const parsed = MemoryFile.safeParse(JSON.parse(text));
         if (parsed.success) return new Memory(path, parsed.data);
         onWarning("memory.json is invalid; starting fresh and keeping a backup");
       } catch (error) {
         onWarning(`memory.json could not be read (${String(error)}); starting fresh and keeping a backup`);
       }
-      await Bun.write(`${path}.broken-${Date.now()}`, file);
+      await copyFile(path, `${path}.broken-${Date.now()}`).catch(() => {});
     }
     return new Memory(path, MemoryFile.parse({}));
   }
