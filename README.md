@@ -87,3 +87,10 @@ The game's internal API (speech bubble, character state, language, tray) was lea
 open-source community mods by **GoodLight999** (Lilith-AI-Mod) and **cza2019**
 (The-NOexistenceN-of-Lilith-Mod), and LilithMod by **pat58151** set the feature baseline. This project
 shares no code with them.
+
+## License
+
+[MIT](LICENSE), for this project's code. *The NOexistenceN of Lilith* and its characters, text and
+art belong to their rights holders and aren't covered. Bundled components keep their own licenses:
+see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Contributions are welcome: issues and pull
+requests in English or Spanish.

@@ -81,6 +81,7 @@ await cp(values.plugin, join(payload, "plugin", "LilithAICompanion.dll"));
 await writeFile(join(payload, "VERSION"), `${pkg.version}\n`);
 await cp(values.exe, join(root, "LilithAICompanion.exe"));
 await cp(resolve("..", "THIRD-PARTY-NOTICES.md"), join(root, "THIRD-PARTY-NOTICES.md"));
+await cp(resolve("..", "LICENSE"), join(root, "LICENSE.txt"));
 await writeFile(
   join(root, "LEEME - README.txt"),
   [

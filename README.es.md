@@ -97,3 +97,10 @@ en `%APPDATA%\LilithAICompanion` se conservan hasta que los borres.
 
 Ver [README.md](README.md#for-developers), [docs/BUILDING.md](docs/BUILDING.md) y
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Licencia
+
+[MIT](LICENSE), para el código de este proyecto. *The NOexistenceN of Lilith*, sus personajes,
+textos y arte pertenecen a sus dueños y no están cubiertos. Los componentes incluidos conservan sus
+propias licencias: ver [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Las contribuciones son
+bienvenidas: issues y pull requests en español o inglés.
