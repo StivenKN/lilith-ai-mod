@@ -43,25 +43,47 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
 
   return (
     <>
-      <div className="transcript" aria-live="polite">
-        {turns.length === 0 && !pending && <Bubble text={tr("chat.empty")} />}
-        {turns.map((turn, index) =>
-          turn.role === "assistant" ? (
-            <Bubble key={index} text={turn.content} meta={turn.source === "speakFirst" ? `${time(turn.at)}, ${tr("chat.spokeFirst")}` : time(turn.at)} />
-          ) : (
-            <div key={index} className="said">
-              {turn.content}
-              <small>{turn.source === "game" ? `${time(turn.at)}, ${tr("chat.fromGame")}` : time(turn.at)}</small>
-            </div>
-          ),
-        )}
-        {pending && (
-          <>
-            <div className="said">{pending}</div>
-            <ThinkingBubble />
-          </>
-        )}
-        <div ref={end} />
+      {/* Her room as a little screen: the conversation on the lilac wall, the composer along the bottom. */}
+      <div className="screen">
+        <div className="transcript" aria-live="polite">
+          {turns.length === 0 && !pending && <Bubble text={tr("chat.empty")} />}
+          {turns.map((turn, index) =>
+            turn.role === "assistant" ? (
+              <Bubble key={index} text={turn.content} meta={turn.source === "speakFirst" ? `${time(turn.at)}, ${tr("chat.spokeFirst")}` : time(turn.at)} />
+            ) : (
+              <div key={index} className="said">
+                {turn.content}
+                <small>{turn.source === "game" ? `${time(turn.at)}, ${tr("chat.fromGame")}` : time(turn.at)}</small>
+              </div>
+            ),
+          )}
+          {pending && (
+            <>
+              <div className="said">{pending}</div>
+              <ThinkingBubble />
+            </>
+          )}
+          <div ref={end} />
+        </div>
+
+        <div className="composer">
+          <textarea
+            aria-label={tr("plugin.placeholder")}
+            placeholder={tr("plugin.placeholder")}
+            value={draft}
+            maxLength={4000}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <button className="primary" disabled={!draft.trim() || pending !== null} onClick={() => void send()}>
+            {tr("plugin.send")}
+          </button>
+        </div>
       </div>
 
       {failure && (
@@ -69,25 +91,6 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
           <p>{failure.message}</p>
         </Note>
       )}
-
-      <div className="composer">
-        <textarea
-          aria-label={tr("plugin.placeholder")}
-          placeholder={tr("plugin.placeholder")}
-          value={draft}
-          maxLength={4000}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <button className="primary" disabled={!draft.trim() || pending !== null} onClick={() => void send()}>
-          {tr("plugin.send")}
-        </button>
-      </div>
       <p className="hint">{props.overview.brain.connected ? tr("chat.hintConnected") : tr("chat.hintOffline")}</p>
     </>
   );

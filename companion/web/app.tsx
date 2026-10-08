@@ -46,46 +46,53 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
   };
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="wordmark">
-          Lilith <span>AI</span>
-        </div>
-        <span className="presence" data-on={connected}>
-          {connected ? tr("shell.gameConnected") : tr("shell.gameNotConnected")}
-        </span>
-        <div className="lang-switch" role="group" aria-label={tr("shell.language")}>
-          {(["es", "en"] as const).map((locale) => (
-            <button key={locale} aria-pressed={overview.brain.uiLocale === locale} onClick={() => void setLanguage(locale)}>
-              {locale === "es" ? "Español" : "English"}
-            </button>
-          ))}
+    <>
+      {/* The lilac wall of Lilith's room; the tabs sit on its bottom edge like folder tabs. */}
+      <header className="band">
+        <div className="band-inner">
+          <div className="topbar">
+            <div className="wordmark">
+              <span className="wordmark-name">Lilith</span>
+              <span className="wordmark-tag">AI</span>
+            </div>
+            <span className="presence" data-on={connected}>
+              {connected ? tr("shell.gameConnected") : tr("shell.gameNotConnected")}
+            </span>
+            <div className="lang-switch" role="group" aria-label={tr("shell.language")}>
+              {(["es", "en"] as const).map((locale) => (
+                <button key={locale} aria-pressed={overview.brain.uiLocale === locale} onClick={() => void setLanguage(locale)}>
+                  {locale === "es" ? "Español" : "English"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {!wizard && (
+            <nav className="tabs" role="tablist">
+              {tabs.map((id) => (
+                <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
+                  {tr(`tab.${id}`)}
+                </button>
+              ))}
+            </nav>
+          )}
         </div>
       </header>
 
-      <UpdateBanner update={overview.update} refresh={props.refresh} />
-
-      {wizard ? (
-        <SetupWizard overview={overview} refresh={props.refresh} onFinish={() => setWizard(false)} />
-      ) : (
-        <>
-          <nav className="tabs" role="tablist">
-            {tabs.map((id) => (
-              <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
-                {tr(`tab.${id}`)}
-              </button>
-            ))}
-          </nav>
-          <main>
+      <main className="page">
+        <UpdateBanner update={overview.update} refresh={props.refresh} />
+        {wizard ? (
+          <SetupWizard overview={overview} refresh={props.refresh} onFinish={() => setWizard(false)} />
+        ) : (
+          <>
             {tab === "chat" && <ChatPage overview={overview} tick={props.tick} />}
             {tab === "lilith" && <LilithPage overview={overview} refresh={props.refresh} />}
             {tab === "ai" && <ProviderPage overview={overview} refresh={props.refresh} />}
             {tab === "game" && <GamePage overview={overview} refresh={props.refresh} openWizard={() => setWizard(true)} />}
             {tab === "help" && <HelpPage overview={overview} />}
-          </main>
-        </>
-      )}
-    </div>
+          </>
+        )}
+      </main>
+    </>
   );
 }
 
