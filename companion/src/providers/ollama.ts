@@ -68,6 +68,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
                 ],
                 stream: false,
                 ...(useThink ? { think: false } : {}),
+                ...(request.json ? { format: request.json.schema } : {}),
                 keep_alive: keepAlive(options.unloadAfterMinutes),
                 options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature: request.temperature },
               },
@@ -188,9 +189,12 @@ export async function isOllamaModelLoaded(baseUrl: string, model: string): Promi
   }
 }
 
-/** Loads the model (or restarts its idle countdown) so the next message doesn't wait for it. */
+/**
+ * Loads the model (or restarts its idle countdown) so the next message doesn't wait for it. With the
+ * same context size as chat: Ollama reloads a model whose context size changes between requests.
+ */
 export async function warmUpOllama(baseUrl: string, model: string, unloadAfterMinutes?: number): Promise<void> {
-  await requestJson(`${ollamaBase(baseUrl)}/api/generate`, { body: { model, keep_alive: keepAlive(unloadAfterMinutes) } }, { timeoutMs: 300_000 });
+  await requestJson(`${ollamaBase(baseUrl)}/api/generate`, { body: { model, keep_alive: keepAlive(unloadAfterMinutes), options: { num_ctx: NUM_CTX } } }, { timeoutMs: 300_000 });
 }
 
 /**

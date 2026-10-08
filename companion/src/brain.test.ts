@@ -10,7 +10,7 @@ import { FakeDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import { ConfigStore } from "./config.ts";
 import { Keepsakes } from "./keepsakes.ts";
 import { Logger } from "./log.ts";
-import { Memory } from "./memory.ts";
+import { contextBudget, Memory } from "./memory.ts";
 import type { CompanionMessage } from "./protocol.ts";
 import { VoiceError, type VoiceService } from "./voice/index.ts";
 
@@ -36,6 +36,9 @@ afterAll(async () => {
 });
 
 const reply = (content: string) => Response.json({ choices: [{ finish_reason: "stop", message: { content } }] });
+/** The player's words in a request's latest message, without the note about the moment the brain puts in front of them. */
+const latestWords = (messages: ReadonlyArray<{ role: string; content: unknown }>) =>
+  String(messages.findLast((message) => message.role === "user")?.content ?? "").replace(/^\[[\s\S]*?\]\n\n/, "");
 const gameState = { type: "state", idle: true, sleep: false, busy: false, interacting: false, drag: false, langRaw: "Spanish", playerName: "" } as const;
 const hello = (caps: Record<string, string> = {}) =>
   ({ type: "hello", v: 1, pluginVersion: "t", gameVersion: "t", unityVersion: "t", bepinexVersion: "t", gameDir: "", caps }) as const;
@@ -102,7 +105,7 @@ describe("Brain", () => {
     await brain.chat("uno", "dashboard");
     await brain.chat("dos", "dashboard");
     expect(memory.history.filter((turn) => turn.role === "assistant")).toHaveLength(2);
-    expect(memory.promptTurns().filter((turn) => turn.role === "assistant")).toHaveLength(1);
+    expect(memory.promptTurns(contextBudget(false)).filter((turn) => turn.role === "assistant")).toHaveLength(1);
   });
 
   test("runs the web search the model asks for and answers with the results", async () => {
@@ -129,7 +132,9 @@ describe("Brain", () => {
     }
     expect(searches).toEqual([expect.objectContaining({ query: "clima en Lima" })]);
     expect(systems[0]).toContain("[buscar: consulta breve]");
-    expect(systems[1]).toContain("Lima weather (bbc.com): 19 °C, cloudy");
+    // The results go in the note before her message; the cached part of the prompt stays the same.
+    expect(systems[1]).toBe(systems[0]!);
+    expect(String(requests[1]!.messages.at(-1)!.content)).toContain("Lima weather (bbc.com): 19 °C, cloudy");
     expect(sent).toContainEqual(expect.objectContaining({ type: "chatStatus", text: "Buscando en internet: clima en Lima…" }));
     expect(JSON.stringify(logger.recent())).not.toContain("fc-secret-key-123456");
   });
@@ -225,7 +230,7 @@ test("a newer queued message prevents superseded computer tasks from starting", 
     if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
     if (path === "/api/ps") return Response.json({ models: [] });
     const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
-    const name = body.messages.findLast((message) => message.role === "user")!.content;
+    const name = latestWords(body.messages);
     if (!body.tools) return Response.json({ message: { content: "Recibí tu mensaje." } });
     return Response.json({ message: body.messages.some((message) => message.role === "tool")
       ? { content: "Hecho." }
@@ -254,7 +259,7 @@ test.each([false, true])("a second chat preserves the pending reply and prevents
     if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
     if (path === "/api/ps") return Response.json({ models: [] });
     const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
-    const user = body.messages.findLast((message) => message.role === "user")!.content;
+    const user = latestWords(body.messages);
     if (user === "hola" && body.tools) {
       started();
       await waiting;
@@ -284,7 +289,7 @@ test("a newer chat still stops a turn after its first action", async () => {
     if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
     if (path === "/api/ps") return Response.json({ models: [] });
     const body = await request.json() as { messages: Array<{ role: string; content: string }> };
-    const user = body.messages.findLast((message) => message.role === "user")!.content;
+    const user = latestWords(body.messages);
     if (user === "hola") return Response.json({ message: { content: "Aquí sigo." } });
     if (body.messages.some((message) => message.role === "tool")) {
       started();
@@ -407,6 +412,138 @@ test("ordinary chat on the computer path retains empty-reply retry behavior", as
   expect(await brain.chat("hola", "dashboard")).toMatchObject({ ok: true, text: "Ahora sí.", emotion: "happy" });
   expect(budgets).toEqual([4096, 1024, 4096]);
   expect(memory.history.at(-1)?.content).toBe("Ahora sí.");
+});
+
+describe("Memory", () => {
+  type Body = { messages: Array<{ role: string; content: string }> };
+  const system = (body: Body) => body.messages[0]!.content;
+
+  test("keeps the cached part of the prompt the same from turn to turn; the moment's note goes on the latest message", async () => {
+    let n = 0;
+    respond = () => reply(["[feliz] Hola, qué gusto verte.", "[neutral] La lluvia suena bonita desde aquí."][n++ % 2]!);
+    const { brain } = await setup("stable-prompt");
+    await brain.chat("hola", "dashboard");
+    await brain.chat("está lloviendo", "dashboard");
+    const [first, second] = requests as unknown as Body[];
+    expect(system(second!)).toBe(system(first!));
+    expect(system(first!)).not.toMatch(/\d\d:\d\d/);
+    expect(second!.messages.map((message) => message.content)).toEqual([
+      system(first!),
+      "hola",
+      "Hola, qué gusto verte.",
+      expect.stringMatching(/^\[Contexto de este momento[\s\S]*\d\d:\d\d[\s\S]*\]\n\nestá lloviendo$/),
+    ]);
+  });
+
+  test("leaves out a closing line she already said, and asks again when little else is left", async () => {
+    const answers = [
+      "[feliz] Mi animal favorito es el perro. ¿Te gustaría que lo hiciéramos juntos?",
+      "[feliz] ¡Qué bueno! Los gatos son muy independientes. ¿Te gustaría que lo hiciéramos juntos?",
+      "[timida] ¿Te gustaría que lo hiciéramos juntos?",
+      "[timida] Entonces te espero aquí, con calma.",
+    ];
+    respond = () => reply(answers.shift()!);
+    const { brain, memory } = await setup("repeated-closer");
+    await brain.chat("¿cuál es tu animal favorito?", "game");
+    expect(await brain.chat("a mí me gustan los gatos", "game")).toMatchObject({ ok: true, text: "¡Qué bueno! Los gatos son muy independientes." });
+    expect(await brain.chat("hacer qué?", "game")).toMatchObject({ ok: true, text: "Entonces te espero aquí, con calma." });
+    expect(String(requests.at(-1)!.messages.at(-1)!.content)).toContain("sin repetir tus preguntas");
+    expect(memory.history.filter((turn) => turn.role === "assistant").map((turn) => turn.content).slice(1)).toEqual([
+      "¡Qué bueno! Los gatos son muy independientes.",
+      "Entonces te espero aquí, con calma.",
+    ]);
+  });
+
+  test("with computer control on, ordinary replies get the same repetition guard", async () => {
+    const desktop = new FakeDesktop();
+    const answers = ["[feliz] Mi animal favorito es el perro. ¿Te gustaría que lo hiciéramos juntos?", "[feliz] ¡Qué bueno! Los gatos son muy independientes. ¿Te gustaría que lo hiciéramos juntos?"];
+    respond = async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+      if (path === "/api/ps") return Response.json({ models: [] });
+      return Response.json({ message: { content: answers.shift() } });
+    };
+    const { brain, config } = await setup("computer-repeats", { desktop: { available: true, desktop } });
+    await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "computer-repeats" }, features: { computerControl: "on", learnFacts: false } });
+    await brain.chat("¿cuál es tu animal favorito?", "game");
+    expect(await brain.chat("a mí me gustan los gatos", "game")).toMatchObject({ ok: true, text: "¡Qué bueno! Los gatos son muy independientes." });
+    // Both replies came through the computer path, not a fallback to ordinary chat.
+    const chats = (requests as unknown as Array<{ tools?: unknown; messages?: unknown }>).filter((body) => body.messages);
+    expect(chats).toHaveLength(2);
+    expect(chats.every((body) => body.tools)).toBe(true);
+  });
+
+  test("upkeep learns notes from whole exchanges and folds older turns into a summary that the next reply reads", async () => {
+    const lines = ["Hoy el cielo se ve tranquilo", "Me gusta cuando me cuentas eso", "Mochi debe estar dormida otra vez", "Qué rico, arepas con queso", "Te espero aquí, como siempre", "Ese solo de guitarra es difícil"];
+    let n = 0;
+    respond = async (request) => {
+      const body = (await request.json()) as Body;
+      if (system(body).startsWith("You keep Lilith's notes")) return reply(JSON.stringify({ add: ["Tiene una gata naranja llamada Mochi"], update: [], remove: [] }));
+      if (system(body).startsWith("You keep a short record")) return reply("- El anfitrión le contó a Lilith que su gata Mochi duerme sobre su teclado.");
+      return reply(`[neutral] ${lines[n++ % lines.length]}.`);
+    };
+    const { brain, memory } = await setup("upkeep");
+    for (let i = 0; i < 5; i++) await brain.chat(`mensaje ${i}: mi gata Mochi duerme sobre mi teclado todo el día`, "game");
+    await brain.chat("sí, mucho", "game");
+    expect(await brain.tidyMemory(true)).toMatchObject({ notesChanged: 1, summarized: expect.any(Number) });
+    expect(memory.notes).toEqual(["Tiene una gata naranja llamada Mochi"]);
+    expect(memory.summary).toBe("- El anfitrión le contó a Lilith que su gata Mochi duerme sobre su teclado.");
+    // The notes see what she said only right before a short reply of theirs, so "sí, mucho" makes sense.
+    const learned = (requests as unknown as Body[]).find((body) => system(body).startsWith("You keep Lilith's notes"))!;
+    expect(learned.messages.at(-1)!.content).toMatch(/Anfitrión: mensaje 4[^\n]*\nLilith: Te espero aquí, como siempre\.\nAnfitrión: sí, mucho/);
+    expect(learned.messages.at(-1)!.content).not.toContain("Lilith: Hoy el cielo");
+
+    requests = [];
+    await brain.chat("¿te acuerdas de Mochi?", "game");
+    const next = requests[0] as unknown as Body;
+    expect(system(next)).toContain("- Tiene una gata naranja llamada Mochi");
+    expect(system(next)).toContain("Lo que pasó antes en su conversación:\n- El anfitrión le contó a Lilith");
+    expect(next.messages.some((message) => message.content.startsWith("mensaje 0:"))).toBe(false);
+  });
+
+  test("a new message stops upkeep instead of waiting for it", async () => {
+    let upkeepStarted!: () => void;
+    const started = new Promise<void>((resolve) => { upkeepStarted = resolve; });
+    respond = async (request) => {
+      const body = (await request.json()) as Body;
+      if (system(body).startsWith("You keep")) {
+        upkeepStarted();
+        await new Promise((resolve) => request.signal.addEventListener("abort", resolve));
+        return reply("{}");
+      }
+      return reply("[feliz] Aquí estoy.");
+    };
+    const { brain, memory } = await setup("upkeep-abort");
+    await brain.chat("hola", "game");
+    const upkeep = brain.tidyMemory(true);
+    await started;
+    expect(await brain.chat("¿sigues ahí?", "game")).toMatchObject({ ok: true, text: "Aquí estoy." });
+    expect(await upkeep).toEqual({ summarized: 0, notesChanged: 0 });
+    expect(memory.notes).toEqual([]);
+  });
+
+  test("closing the game stops upkeep, even an overdue summary, so it can't load the model again", async () => {
+    let summaryStarted!: () => void;
+    const started = new Promise<void>((resolve) => { summaryStarted = resolve; });
+    const answers = ["Hoy el cielo se ve tranquilo.", "Mochi debe estar dormida otra vez.", "Ese solo de guitarra es difícil."];
+    respond = async (request) => {
+      const body = (await request.json()) as Body;
+      if (system(body).startsWith("You keep a short record")) {
+        summaryStarted();
+        await new Promise((resolve) => request.signal.addEventListener("abort", resolve));
+        return reply("- Nada.");
+      }
+      return reply(`[neutral] ${answers.shift()}`);
+    };
+    const { brain, memory } = await setup("upkeep-close");
+    // Three long messages outgrow the local window, so the summary is overdue.
+    for (let i = 0; i < 3; i++) await brain.chat(`mensaje ${i}: ${"te cuento de mi día ".repeat(80)}`, "game");
+    const upkeep = brain.tidyMemory();
+    await started;
+    await brain.pluginDisconnected();
+    expect(await upkeep).toEqual({ summarized: 0, notesChanged: 0 });
+    expect(memory.summary).toBe("");
+  });
 });
 
 describe("Cards", () => {

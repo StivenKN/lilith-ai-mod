@@ -15,7 +15,7 @@ import { findGameDirs, inspectGame, install, payloadStatus, steamRoots, uninstal
 import { languages } from "./languages.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { MAX_PICTURE_BYTES, type Keepsake, type Keepsakes } from "./keepsakes.ts";
-import type { Memory } from "./memory.ts";
+import { SUMMARY_MAX_CHARS, type Memory } from "./memory.ts";
 import type { DataPaths } from "./paths.ts";
 import { defaultPersona } from "./prompt.ts";
 import { createProvider, ProviderError } from "./providers/index.ts";
@@ -163,16 +163,25 @@ export function createProcedures(ctx: AppContext) {
 
     clearHistory: procedure(none, async () => {
       await ctx.memory.clearHistory();
-      log.info("conversation history cleared");
+      log.info("conversation history and its summary cleared");
       return { ok: true };
     }),
 
-    notes: procedure(none, async () => ctx.memory.notes),
+    /** What she remembers beyond the recent messages: her notes about the player and the summary of older talk. */
+    memory: procedure(none, async () => ({ notes: ctx.memory.notes, summary: ctx.memory.summary })),
 
     saveNotes: procedure(z.object({ notes: z.array(z.string()) }), async ({ notes }) => {
       await ctx.memory.setNotes(notes);
       return ctx.memory.notes;
     }),
+
+    saveSummary: procedure(z.object({ summary: z.string().max(SUMMARY_MAX_CHARS * 2) }), async ({ summary }) => {
+      await ctx.memory.setSummary(summary);
+      return ctx.memory.summary;
+    }),
+
+    /** Updates the notes and folds all but the recent messages into the summary, now. */
+    summarizeNow: procedure(none, async () => ctx.brain.tidyMemory(true)),
 
     keepsakes: procedure(none, async () => ({
       keepsakes: ctx.keepsakes.list.map(forDashboard),

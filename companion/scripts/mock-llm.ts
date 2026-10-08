@@ -22,16 +22,18 @@ const replies = {
 };
 let turn = 0;
 
-const reply = (system: string, user: string) => {
+const reply = (system: string, noted: string, user: string) => {
   const es = /español/i.test(system);
   if (system.startsWith("Describe this picture")) return "A grey cat asleep on a keyboard.";
+  if (system.startsWith("You keep Lilith's notes")) return JSON.stringify({ add: [], update: [], remove: [] });
+  if (system.startsWith("You keep a short record")) return "- The host stopped by to chat with Lilith about their day.";
   if (/Reglas de la tarjeta|Card rules/.test(system)) {
     return es
       ? "Me acordé de lo que me mostraste y no pude dejar de sonreír. Gracias por compartirlo conmigo. — Lilith"
       : "I kept thinking about what you showed me, and it made me smile. Thank you for sharing it with me. — Lilith";
   }
   const searchAllowed = /\[(search|buscar): /.test(system);
-  const topResult = /^1\. (.+)$/m.exec(system)?.[1];
+  const topResult = /^1\. (.+)$/m.exec(noted)?.[1];
   if (topResult) return `[happy] I looked it up: ${topResult.slice(0, 160)}`;
   if (searchAllowed && user.startsWith("?")) return `[search: ${user.slice(1).trim()}]`;
   const list = es ? replies.es : replies.en;
@@ -47,7 +49,9 @@ const server = Bun.serve({
     const systemContent = messages.find((message) => message.role === "system")?.content;
     const userContent = messages.findLast((message) => message.role === "user" && typeof message.content === "string")?.content;
     const system = typeof systemContent === "string" ? systemContent : "";
-    const user = typeof userContent === "string" ? userContent : "";
+    // The latest message comes with a note about the moment (and any search results) in front of it.
+    const noted = typeof userContent === "string" ? userContent : "";
+    const user = noted.replace(/^\[[\s\S]*?\]\n\n/, "");
     const toolRequest = !!body.tools && user.startsWith("!") && !messages.some((message) => message.role === "tool");
     const toolReply = messages.some((message) => message.role === "tool");
     const tool = { name: "open_url", arguments: { url: "https://example.com/" } };
@@ -60,7 +64,7 @@ const server = Bun.serve({
         if (body.model === "broken") return Response.json({ error: { message: "The model `broken` does not exist" } }, { status: 404 });
         if (toolRequest) return Response.json({ model: body.model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "mock-open", type: "function", function: { ...tool, arguments: JSON.stringify(tool.arguments) } }] } }] });
         if (toolReply) return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: "[feliz] Abrí el enlace." } }] });
-        return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: reply(system, user) } }] });
+        return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: reply(system, noted, user) } }] });
       case "/api/version":
         return Response.json({ version: "0.33.1-mock" });
       case "/api/tags":
@@ -75,7 +79,7 @@ const server = Bun.serve({
         if (!installed.has(String(body.model))) return Response.json({ error: `model "${String(body.model)}" not found, try pulling it first` }, { status: 404 });
         if (toolRequest) return Response.json({ model: body.model, message: { content: "", tool_calls: [{ function: tool }] }, done_reason: "stop" });
         if (toolReply) return Response.json({ model: body.model, message: { content: "[feliz] Abrí el enlace." }, done_reason: "stop" });
-        return Response.json({ model: body.model, message: { content: reply(system, user) }, done_reason: "stop" });
+        return Response.json({ model: body.model, message: { content: reply(system, noted, user) }, done_reason: "stop" });
       case "/api/pull": {
         const model = String(body.model);
         const stream = new ReadableStream<string>({

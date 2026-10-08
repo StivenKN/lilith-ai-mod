@@ -162,3 +162,52 @@ export function similarity(a: string, b: string): number {
 
 export const isRepeat = (reply: string, previous: readonly string[], threshold = 0.8): boolean =>
   previous.some((earlier) => similarity(reply, earlier) >= threshold);
+
+/**
+ * Splits text after sentence-ending punctuation: followed by a space in Latin text, anywhere in
+ * CJK. Not after an ellipsis, which in Spanish often trails off mid-sentence ("O… ¿qué te gusta?").
+ */
+export const splitSentences = (text: string): string[] =>
+  text.split(/(?<=[!?]|(?<!\.)\.)\s+|(?<=[。！？])/u).map((sentence) => sentence.trim()).filter(Boolean);
+
+/** Shorter sentences ("¡Qué bueno!", "Jaja.") may come up again naturally. */
+const REPEAT_MIN_CHARS = 16;
+/** Words in a row two sentences must share to count as a catchphrase ("…o que te acompañe a dormir"). */
+const CATCHPHRASE_WORDS = 6;
+
+const words = (text: string): string[] =>
+  stripAccents(text.toLowerCase()).replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
+
+/** Every run of CATCHPHRASE_WORDS words in a row. */
+function phrases(text: string): Set<string> {
+  const list = words(text);
+  const runs = new Set<string>();
+  for (let i = 0; i + CATCHPHRASE_WORDS <= list.length; i++) runs.add(list.slice(i, i + CATCHPHRASE_WORDS).join(" "));
+  return runs;
+}
+
+/**
+ * Sentences of `reply` that echo one of her earlier replies or an earlier sentence of the same
+ * reply: nearly the same sentence, or the same six words in a row. Small models fall into
+ * catchphrase loops (the same closing question on every reply, with a word or two changed) that
+ * a whole-reply comparison misses.
+ */
+export function repeatedSentences(reply: string, previous: readonly string[], threshold = 0.7): string[] {
+  const earlier = previous.flatMap(splitSentences).filter((sentence) => sentence.length >= REPEAT_MIN_CHARS);
+  const said = new Set(earlier.flatMap((sentence) => [...phrases(sentence)]));
+  const repeated: string[] = [];
+  for (const sentence of splitSentences(reply)) {
+    const runs = phrases(sentence);
+    if (sentence.length >= REPEAT_MIN_CHARS && ([...runs].some((run) => said.has(run)) || earlier.some((other) => similarity(sentence, other) >= threshold))) {
+      repeated.push(sentence);
+    } else {
+      earlier.push(sentence);
+      for (const run of runs) said.add(run);
+    }
+  }
+  return repeated;
+}
+
+/** The reply without the given sentences. */
+export const withoutSentences = (reply: string, drop: readonly string[]): string =>
+  splitSentences(reply).filter((sentence) => !drop.includes(sentence)).join(" ");

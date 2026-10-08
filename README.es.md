@@ -21,7 +21,9 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
   [Piper](https://github.com/rhasspy/piper) y la reconoce
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp); la pestaña **Voz** del panel descarga solo
   lo que actives (entre 100 y 400 MB) y te deja elegir su voz, velocidad y volumen.
-- **Memoria.** Sigue la conversación y guarda datos sobre ti que puedes leer, editar y borrar.
+- **Memoria.** Sigue la conversación, resume la parte más antigua cuando se alarga para no perder el
+  hilo, y guarda datos sobre ti que corrige cuando algo cambia. Puedes leer, editar y borrar ambos.
+  Pensada para modelos de IA pequeños en tu propio PC.
 - **Tarjetas de Lilith.** Te deja tarjetas escritas a mano en la bandeja de notas del propio juego,
   como mucho una al día, sobre lo que han hablado y lo que decidas compartirle: notas, y fotos que
   eliges de tu PC en la pestaña **Tarjetas** del panel. Reacciona en su globo cuando le compartes
@@ -89,9 +91,9 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
 - Con Ollama u otro servidor en este PC, nada sale de tu PC. Un servidor en tu red local recibe los datos por esa red.
 - La voz siempre funciona en tu PC. Las grabaciones se borran en cuanto se convierten en texto, y lo
   que dices solo sale de tu PC como ese texto, igual que un mensaje escrito.
-- Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente, la
-  personalidad de Lilith, las notas sobre ti, lo que le compartes para sus tarjetas, la hora y tu
-  nombre de jugador. Tu clave solo se envía a ese servicio.
+- Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente y su
+  resumen, la personalidad de Lilith, las notas sobre ti, lo que le compartes para sus tarjetas,
+  la hora y tu nombre de jugador. Tu clave solo se envía a ese servicio.
 - Con la búsqueda en internet activada, solo se envían a DuckDuckGo o Firecrawl las palabras que
   ella elige buscar, nunca tu conversación.
 - Para buscar actualizaciones, el mod le pide a GitHub la lista de versiones cada pocas horas; no

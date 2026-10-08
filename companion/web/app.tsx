@@ -87,7 +87,7 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
         ) : (
           <>
             {tab === "chat" && <ChatPage overview={overview} tick={props.tick} />}
-            {tab === "lilith" && <LilithPage overview={overview} refresh={props.refresh} />}
+            {tab === "lilith" && <LilithPage overview={overview} tick={props.tick} refresh={props.refresh} />}
             {tab === "cards" && <CardsPage overview={overview} refresh={props.refresh} tick={props.tick} />}
             {tab === "voice" && <VoicePage overview={overview} refresh={props.refresh} />}
             {tab === "ai" && <ProviderPage overview={overview} refresh={props.refresh} />}

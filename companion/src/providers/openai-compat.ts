@@ -72,6 +72,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
       stream: false,
       [tokensField]: request.maxTokens,
       temperature: request.temperature,
+      ...(request.json ? { response_format: { type: "json_schema", json_schema: { ...request.json, strict: true } } } : {}),
       ...options.preset.extraBody,
     };
     for (const quirk of quirks) if (quirk.startsWith("drop:")) delete body[quirk.slice(5)];
@@ -86,6 +87,9 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
       quirks.add("max_completion_tokens");
     } else if ("max_completion_tokens" in body && /max_completion_tokens/.test(message)) {
       quirks.add("max_tokens");
+    } else if ("response_format" in body && /response_format|json|schema/i.test(message)) {
+      // Structured output is optional: the prompt describes the format too.
+      quirks.add("drop:response_format");
     } else {
       const field = Object.keys(body).find(
         (key) => !["model", "messages", "stream", "max_tokens", "max_completion_tokens", "tools", "tool_choice"].includes(key) && message.includes(key),

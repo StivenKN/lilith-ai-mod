@@ -65,14 +65,15 @@ Nothing needs a restart after a settings change:
 2. The companion queues the turn. Turns are serialized: one request in flight at a time.
 3. The companion shows the thinking state: `chatStatus thinking`, plus `say "…"` in her bubble.
    - After 8 s it adds "still thinking", or "loading the model" for local AI.
-4. It calls the provider with the persona, the context (time, her state, the player's name, notes)
-   and the last 20 turns.
+4. It calls the provider with the persona, what she remembers (notes, the conversation summary),
+   the turns since the summary, and the latest message with a short note in front of it (time, her
+   state, how long since they last talked). See [Memory](#memory) for the layout.
    - Timeouts are explicit: 60 s, or 180 s while a local model loads.
    - 429 and 5xx errors get one retry.
    - A 400 that names a parameter drops or renames that parameter and retries.
    - With web search on, the prompt lets the model answer with only `[search: query]` (or
      `[buscar: …]`). The companion runs that search (`search.ts`), shows "searching the web" in the
-     popup, and asks again with the top results in the system prompt. A failed search is logged and
+     popup, and asks again with the top results in the note before the latest message. A failed search is logged and
      the model is told it got nothing, so she still answers. This works with every provider because
      it needs no tool-calling support.
 5. It shapes the reply:
@@ -80,12 +81,75 @@ Nothing needs a restart after a settings change:
    - reads the `[emotion]` tag (Spanish or English);
    - trims to length;
    - if the reply was empty because the model only reasoned, retries once with a 4× token budget;
-   - if it's a near-repeat, retries once with a nudge.
+   - leaves out sentences that repeat her recent replies; if little is left, retries once with a nudge.
 6. It wraps the reply for the bubble (CJK counts as double width), splits it into pages, and sends
    `say` per page, paced by reading time.
 7. On failure, the error is classified (auth, billing, model not found, rate limit, timeout,
    unreachable…). The player sees a localized, actionable message in the bubble and the popup; the
    technical detail goes to the log and the dashboard.
+
+## Memory
+
+`companion/src/memory.ts` keeps three layers in `memory.json`. They are sized for small local models
+(a 4B model with an 8k context). The dashboard's Lilith tab shows the notes and the summary, and the
+player can edit or clear them.
+
+- **The conversation.** The last 400 turns are kept for the transcript. The model gets only the turns
+  after the summary, within a budget. For local AI that's 1.2k tokens and at most 12 exchanges; online
+  services get 9k tokens.
+  - Tokens are estimated at 3 characters each (one per CJK character).
+  - Every turn counts as at least 50 tokens, because a small model copies its own replies however
+    short they are.
+- **The summary.** Locally, once the turns after it pass 10 exchanges (1k tokens), the oldest are
+  folded into it, down to the last 4 exchanges. Online, that's past 6k tokens, down to 2.5k. A fold
+  always ends on one of her replies. Each pass writes 1 to 4 short lines of plain fact about the
+  folded turns, from the player's messages only. Code appends them, skips near-duplicates, and
+  retires the oldest lines past 12. Each choice comes from a 4B model's failures:
+  - Asked for prose, it invented links between facts, and a wrong summary misleads every later reply.
+  - Asked to rewrite the whole summary, it dropped what came before and kept trivia.
+  - Given her messages too, it filled the summary with her stories, which then came back in her
+    replies. Who she is comes from the persona.
+- **Notes about the player.** Every 4 of their messages, a pass reads the new ones and answers with
+  JSON changes: add, update by number, remove. Before each short reply of theirs, it sees her last
+  sentence, so "yes, I love them" makes sense. Shown more of her lines, a 4B model noted what she
+  said as facts about the player. Ollama and OpenAI-compatible servers enforce the JSON schema while
+  decoding. Code checks every change: it ignores unknown numbers, questions and
+  fragments, skips near-duplicates, and lets one pass remove at most a third of the notes. At most 30.
+
+Upkeep runs in the turn queue, 15 s after her reply: first the notes pass, then the summary. Each is
+one small request with its own focused prompt, which a 4B model handles better than one combined
+task.
+- A new message aborts upkeep, and it continues at the next pause. Ollama stops generating when the
+  request is aborted.
+- Once the turns no longer fit the window, the summary is overdue and finishes even if a message
+  arrives. That costs one wait instead of every later reply silently dropping turns.
+- Work started before the player edits or clears her memory is discarded.
+
+The prompt is laid out for prompt caching. Ollama and llama.cpp reuse the longest common prefix of
+the previous prompt, so a turn only processes what's new. The layout:
+
+1. **System prompt:** persona, the player's name, notes, summary, reply format, and the search and
+   computer rules. Nothing in it changes between messages.
+2. **The turns since the summary.** They change only when a summary pass runs, not every message as
+   a sliding window would.
+3. **The latest message**, with a note in front of it: date and time, her state, the gap since they
+   last talked, search results when she asked for them, and up to 3 notes that share words with the
+   message. A small model overlooks a note at the top of the prompt, and pays the most attention to
+   the end. The note isn't stored.
+
+Ollama runs `qwen3vl` models with a single slot, so an upkeep request replaces the cached chat prompt.
+The next reply then processes its whole prompt once.
+
+Small models loop: they copy their own phrasing, and the more often a sentence appears in the context
+the likelier it comes back. Ollama's repetition penalties only look at the last 64 tokens, so the fix
+is in the context. In testing with qwen3-vl:4b, a presence penalty made things worse: that window
+holds the note before the latest message, so it pushed her away from the very notes she was asked
+about. Sampling stays at the model's defaults and the player's temperature.
+
+Before a reply is shown and stored, it loses any sentence that echoes her last 6 replies or repeats
+itself. If little is left, she's asked once more, at a slightly higher temperature, with a nudge that
+doesn't quote the phrase (quoting it would prime it). The built-in persona's example replies don't all
+end in a question, for the same reason.
 
 ## Local model memory
 
