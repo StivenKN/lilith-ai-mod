@@ -8,7 +8,9 @@ Two parts, and both build on any OS:
 
 ## Companion
 
-Requirements: Node 20+ and pnpm. Bun is installed as a dev dependency, so nothing else is needed.
+Requirements: Node 20+ and pnpm. Bun is installed as a dev dependency. Zips are read and written
+with bsdtar, which Windows and macOS already include; on Linux install it (`libarchive-tools` on
+Debian/Ubuntu, `libarchive` elsewhere), because GNU tar can't handle zip.
 
 ```sh
 cd companion

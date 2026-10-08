@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { zipTar } from "../src/zip.ts";
 
 export interface Pinned {
   url: string;
@@ -47,11 +48,11 @@ export async function run(command: string[]): Promise<void> {
   if ((await child.exited) !== 0) throw new Error(`failed: ${command.join(" ")}`);
 }
 
-/** Extracts the pinned BepInEx into `dir` (bsdtar reads zip on macOS and Windows 10+). */
+/** Extracts the pinned BepInEx into `dir`. */
 export async function extractBepInEx(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
-  await run(["tar", "-xf", await fetchPinned(BEPINEX), "-C", dir]);
+  await run([zipTar, "-xf", await fetchPinned(BEPINEX), "-C", dir]);
 }
 
 if (import.meta.main) {

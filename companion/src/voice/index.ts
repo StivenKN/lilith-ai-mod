@@ -11,6 +11,7 @@ import { availableParallelism } from "node:os";
 import { dirname, join } from "node:path";
 import type { Language } from "../languages.ts";
 import { errorMessage, type Log } from "../log.ts";
+import { zipTar } from "../zip.ts";
 import { componentFor, engines, isComponentId, sttModelIds, sttModels, voiceIds, voices, type ComponentId, type Download, type SpokenLanguage, type SttModelId, type VoiceId } from "./catalog.ts";
 import { applyGain, readWav } from "./wav.ts";
 
@@ -271,9 +272,7 @@ async function extractZip(zip: string, into: string): Promise<void> {
   const scratch = `${into}.unpacking`;
   await rm(scratch, { recursive: true, force: true });
   await mkdir(scratch, { recursive: true });
-  // Windows' own bsdtar reads zip; a GNU tar earlier in PATH (Git for Windows) wouldn't.
-  const tar = process.platform === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
-  const { code, stderr } = await runProcess([tar, "-xf", zip, "-C", scratch], { cwd: dirname(zip) });
+  const { code, stderr } = await runProcess([zipTar, "-xf", zip, "-C", scratch], { cwd: dirname(zip) });
   if (code !== 0) throw new Error(`could not unpack ${zip}: ${stderr.trim() || `tar exited with ${code}`}`);
   await mkdir(into, { recursive: true });
   for (const entry of await readdir(scratch)) {

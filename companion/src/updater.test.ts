@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { removeUpdateLeftovers } from "./installer.ts";
 import { Logger } from "./log.ts";
 import { checksumLine, pickUpdate, Updater, zipName } from "./updater.ts";
+import { zipTar } from "./zip.ts";
 
 const temps: string[] = [];
 afterEach(async () => Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
@@ -54,7 +55,7 @@ describe("Updater.install", () => {
     await writeFile(join(folder, "LilithAICompanion.exe"), "new exe");
     await writeFile(join(folder, "payload", "plugin", "LilithAICompanion.dll"), "new dll");
     const zip = join(build, zipName("0.2.0"));
-    expect(await Bun.spawn(["tar", "-a", "-c", "-f", zip, "-C", build, "LilithAICompanion-0.2.0"]).exited).toBe(0);
+    expect(await Bun.spawn([zipTar, "--format=zip", "-c", "-f", zip, "-C", build, "LilithAICompanion-0.2.0"]).exited).toBe(0);
     const bytes = await Bun.file(zip).bytes();
     const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 

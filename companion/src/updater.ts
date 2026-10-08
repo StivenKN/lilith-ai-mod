@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { COMPANION_EXE, PLUGIN_DLL, removeUpdateLeftovers, replaceModFiles } from "./installer.ts";
 import { errorMessage, type Log } from "./log.ts";
+import { zipTar } from "./zip.ts";
 
 export const RELEASES_API = "https://api.github.com/repos/StivenKN/lilith-ai-mod/releases";
 const FIRST_CHECK_MS = 60_000;
@@ -143,7 +144,7 @@ export class Updater {
       // The zip holds one folder: LilithAICompanion-<version>/{LilithAICompanion.exe, payload/plugin/LilithAICompanion.dll, …}
       const root = `LilithAICompanion-${version}`;
       const members = [`${root}/${COMPANION_EXE}`, `${root}/payload/plugin/${PLUGIN_DLL}`];
-      const tar = Bun.spawn(["tar", "-x", "-f", zip, "-C", dir, ...members], { stdout: "ignore", stderr: "pipe", windowsHide: true });
+      const tar = Bun.spawn([zipTar, "-x", "-f", zip, "-C", dir, ...members], { stdout: "ignore", stderr: "pipe", windowsHide: true });
       if ((await tar.exited) !== 0) throw new Error(`could not extract the update: ${(await new Response(tar.stderr).text()).trim()}`);
 
       await replaceModFiles({ modDir, companion: join(dir, members[0]!), plugin: join(dir, members[1]!), version });

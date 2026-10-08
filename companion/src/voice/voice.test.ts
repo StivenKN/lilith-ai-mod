@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Logger } from "../log.ts";
+import { zipTar } from "../zip.ts";
 import { componentFor, isComponentId, voiceIdsFor, voices } from "./catalog.ts";
 import { cleanTranscript, download, forSpeech, runProcess, whisperLanguage } from "./index.ts";
 import { applyGain, encodeWav, readWav } from "./wav.ts";
@@ -82,7 +83,7 @@ describe("download", () => {
     await mkdir(join(source, "piper"), { recursive: true });
     await writeFile(join(source, "piper", "piper.exe"), "fake engine");
     const zipPath = join(dir, "engine.zip");
-    expect((await runProcess(["tar", "--format=zip", "-cf", zipPath, "-C", source, "piper"], { cwd: dir })).code).toBe(0);
+    expect((await runProcess([zipTar, "--format=zip", "-c", "-f", zipPath, "-C", source, "piper"], { cwd: dir })).code).toBe(0);
     zip = new Uint8Array(await readFile(zipPath));
     server = Bun.serve({ port: 0, fetch: (request) => new Response(new URL(request.url).pathname === "/engine.zip" ? zip : payload) });
   });

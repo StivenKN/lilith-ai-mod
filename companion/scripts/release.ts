@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { checksumLine } from "../src/updater.ts";
+import { zipTar } from "../src/zip.ts";
 import { extractBepInEx, fetchPinned, run, UNITY_LIBS } from "./pinned.ts";
 
 const { values } = parseArgs({
@@ -74,7 +75,7 @@ await writeFile(
 
 const zip = join(releaseDir, `${name}.zip`);
 await rm(zip, { force: true });
-await run(["tar", "-a", "-c", "-f", zip, "-C", releaseDir, name]);
+await run([zipTar, "--format=zip", "-c", "-f", zip, "-C", releaseDir, name]);
 const zipHash = createHash("sha256").update(await Bun.file(zip).bytes()).digest("hex");
 
 const beta = version.includes("-");
