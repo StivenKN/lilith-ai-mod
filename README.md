@@ -17,6 +17,10 @@ answers in her own speech bubble, in character, in your language, and remembers 
   translated, and the dashboard and in-game messages are fully localized. She replies in the game's
   language (all 12) or one you pick.
 - **Memory.** She follows the conversation and keeps notes about you that you can read, edit and delete.
+- **Cards from Lilith.** She leaves handwritten cards in the game's own note inbox, at most one a
+  day, about what you've talked about and what you chose to share with her: notes, and pictures you
+  pick from your PC in the dashboard's **Cards** tab. She reacts in her bubble when you share
+  something, and you can ask for a card any time.
 - **Speaks first** (optional) after a quiet while, never while she's asleep.
 - **Your choice of AI:** Ollama on your PC (free, private), OpenAI, Claude, Gemini, DeepSeek,
   OpenRouter, Groq, Mistral, xAI, LM Studio, or any OpenAI-compatible server.
@@ -47,11 +51,11 @@ unsigned programs).
 
 Settings, API keys, memory and logs stay on your PC in `%APPDATA%\LilithAICompanion`. With Ollama or
 another server on this PC nothing leaves your PC. A LAN server receives the data on your network.
-With an online service, your message, the recent
-conversation, Lilith's persona, her notes about you, the time and your player name go to that
-service. With web search on, only the search words she picks go to DuckDuckGo or Firecrawl, never
-your conversation. To check for updates, the mod asks GitHub for the list of releases every few hours; nothing
-about you is sent.
+With an online service, your message, the recent conversation, Lilith's persona, her notes about
+you, what you shared for her cards, the time and your player name go to that service. With web
+search on, only the search words she picks go to DuckDuckGo or Firecrawl, never your conversation.
+To check for updates, the mod asks GitHub for the list of releases every few hours; nothing about
+you is sent.
 
 Computer control is automatic for local or LAN AI, and off for online services until you enable
 it in **Lilith → Using your PC**. When asked to use your PC, Lilith can inspect the focused app and
@@ -60,6 +64,11 @@ Screenshots stay in memory during the turn and are not saved in conversation his
 Models without vision can only open apps and links, type and press keys. Move the mouse or press
 a key to stop her. The prompt tells her to ask before purchases, sending messages, deletion,
 password entry or accepting terms. Terminal and system-tool keyboard input is blocked in code.
+
+Pictures you share for her cards are the only files the mod reads for them, and only the ones you
+pick. They are shrunk and re-encoded in your browser before saving, which also removes hidden details
+such as GPS location. With an online AI, each picture is sent once so she can see it; after that,
+cards use the short description she wrote and your caption. **Remove** deletes a picture from your PC.
 
 ## Uninstall
 

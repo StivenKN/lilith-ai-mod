@@ -1,19 +1,32 @@
 // Orchestrates conversations: one turn at a time, thinking indicator, explicit timeouts, the
 // empty-reply and repetition retries, bubble paging, and plain-language errors that always
 // reach the player (in the bubble and the chat window) instead of a stock in-character line.
+// Also writes the cards she leaves in the game's inbox, from what the player chose to share.
 
 import type { ConfigStore } from "./config.ts";
 import { apiKeyFor } from "./config.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import type { Action } from "./computer/actions.ts";
-import type { Capabilities } from "./providers/types.ts";
+import type { Capabilities, ChatRequest, ChatResult } from "./providers/types.ts";
 import { translator, type Translate } from "./i18n.ts";
 import { resolveLanguage, uiLocaleFor, type Language, type UiLocale } from "./languages.ts";
 import type { Log, Logger } from "./log.ts";
 import { errorMessage } from "./log.ts";
+import type { Card, Keepsake, Keepsakes, Picture } from "./keepsakes.ts";
 import type { Memory, StoredTurn } from "./memory.ts";
-import { avoidRepeatCue, buildSystemPrompt, defaultPersona, learnFactsPrompt, speakFirstCue, type PromptContext } from "./prompt.ts";
+import {
+  avoidRepeatCue,
+  buildCardPrompt,
+  buildSystemPrompt,
+  CARD_MAX_CHARS,
+  defaultPersona,
+  describePicturePrompt,
+  keepsakeCue,
+  learnFactsPrompt,
+  speakFirstCue,
+  type PromptContext,
+} from "./prompt.ts";
 import { createProvider, isLocalProvider, ProviderError, type ErrorKind, type Provider } from "./providers/index.ts";
 import type { ProviderSettings } from "./providers/index.ts";
 import { isOllamaModelLoaded, warmUpOllama } from "./providers/ollama.ts";
@@ -25,16 +38,26 @@ import { createSearcher, findSearchRequest, stripSearchTags } from "./search.ts"
 const MAX_TOKENS = 1024;
 const RETRY_MAX_TOKENS = 4096;
 const LEARN_EVERY = 6;
+/** Automatic cards: at most one this often, only after this much new to write about, while the player is away. */
+const AUTO_CARD_EVERY_MS = 20 * 3600_000;
+const AUTO_CARD_MIN_MESSAGES = 4;
+const AUTO_CARD_AWAY_MS = 10 * 60_000;
+/** After an automatic attempt (failed or not), wait this long before the next, so an AI outage isn't retried every minute. */
+const AUTO_CARD_RETRY_MS = 3600_000;
+/** Cards written while the game was closed are delivered on its next start if they're this recent. */
+const PENDING_CARD_MAX_AGE_MS = 7 * 24 * 3600_000;
 
 export type TurnFailure = { kind: ErrorKind | "internal"; message: string; detail: string };
 export type TurnResult =
   | { ok: true; text: string; emotion: Emotion; latencyMs: number; model: string }
   | { ok: false; error: TurnFailure };
+export type CardResult = { ok: true; card: Card } | { ok: false; error: TurnFailure };
 
 export interface BrainOptions {
   version: string;
   config: ConfigStore;
   memory: Memory;
+  keepsakes: Keepsakes;
   logger: Logger;
   /** Sends a message to the plugin (no-op when the game isn't attached). */
   send: (message: CompanionMessage) => void;
@@ -47,7 +70,7 @@ export interface BrainOptions {
 }
 
 export interface BrainEvent {
-  type: "plugin" | "turn" | "error";
+  type: "plugin" | "turn" | "error" | "keepsakes";
 }
 
 export class Brain {
@@ -62,6 +85,7 @@ export class Brain {
   #warm = new Set<string>();
   #openedSetup = false;
   #speakFirstTimer: ReturnType<typeof setInterval> | null = null;
+  #nextAutoCardAt = 0;
   #listeners = new Set<(event: BrainEvent) => void>();
   #desktop: DesktopStatus = { available: false, reason: "Checking desktop support" };
   #desktopReady: Promise<DesktopStatus>;
@@ -89,7 +113,10 @@ export class Brain {
   }
 
   start(): void {
-    this.#speakFirstTimer = setInterval(() => this.#maybeSpeakFirst(), 60_000);
+    this.#speakFirstTimer = setInterval(() => {
+      this.#maybeSpeakFirst();
+      this.#maybeWriteCard();
+    }, 60_000);
   }
 
   async stop(): Promise<void> {
@@ -131,6 +158,9 @@ export class Brain {
         return;
       case "result":
         if (!message.ok) this.#log.warn(`plugin could not show message ${message.id}: ${message.error ?? "unknown reason"}`);
+        void this.options.keepsakes.cardDelivered(message.id, message.ok, message.error).then((isCard) => {
+          if (isCard) this.#emit({ type: "keepsakes" });
+        });
         return;
       case "log":
         this.options.logger.write(message.level, "plugin", message.msg);
@@ -150,6 +180,9 @@ export class Brain {
       this.options.onFatal("protocol version mismatch");
       return;
     }
+    // The plugin says hello again whenever one of its capabilities changes; only a new connection
+    // gets the cards written while the game was closed, so none is delivered twice.
+    const newConnection = !this.#connected;
     this.#hello = hello;
     this.#connected = true;
     this.#log.info(
@@ -161,6 +194,7 @@ export class Brain {
     }
     this.#sendReady();
     this.#emit({ type: "plugin" });
+    if (newConnection) this.#deliverPendingCards();
 
     const { provider } = this.options.config.current;
     if (!provider.configured && !this.#openedSetup) {
@@ -458,7 +492,7 @@ export class Brain {
     const searcher = createSearcher(config.search);
     const context: PromptContext = {
       language,
-      persona: config.persona.custom?.trim() || defaultPersona(language),
+      persona: this.#persona(language),
       now: new Date(),
       playerName: this.#state?.playerName ?? "",
       state: this.#state,
@@ -493,13 +527,8 @@ export class Brain {
       request = { ...request, system };
       result = await provider.chat(request);
     }
-    let reply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
-    if (!reply.text) {
-      this.#log.warn(`empty reply (finish: ${result.finish}, reasoning: ${result.reasoning.length} chars); retrying with a larger budget`);
-      result = await provider.chat({ ...request, maxTokens: RETRY_MAX_TOKENS });
-      reply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
-      if (!reply.text) throw new ProviderError("empty_reply", `No visible text after retry (finish: ${result.finish})`);
-    }
+    const { reply: first, model } = await this.#complete(provider, request, config.advanced.maxReplyChars, result);
+    let reply = first;
     if (isRepeat(reply.text, this.options.memory.recentReplies())) {
       this.#log.info("near-duplicate reply; asking once for something new");
       const retried = await provider.chat({ ...request, system: system + avoidRepeatCue(language) });
@@ -507,7 +536,23 @@ export class Brain {
       if (retry.text) reply = retry;
     }
     this.#warm.add(warmKey(settings));
-    return { text: reply.text, emotion: reply.emotion, model: result.model };
+    return { text: reply.text, emotion: reply.emotion, model };
+  }
+
+  /**
+   * One model call shaped for display, retried once with a larger budget if only reasoning came
+   * back. Pass `result` when the first answer was already fetched (e.g. after a web search).
+   */
+  async #complete(provider: Provider, request: ChatRequest, maxChars: number, result?: ChatResult) {
+    result ??= await provider.chat(request);
+    let reply = parseReply(stripSearchTags(result.text), maxChars);
+    if (!reply.text) {
+      this.#log.warn(`empty reply (finish: ${result.finish}, reasoning: ${result.reasoning.length} chars); retrying with a larger budget`);
+      result = await provider.chat({ ...request, maxTokens: RETRY_MAX_TOKENS });
+      reply = parseReply(stripSearchTags(result.text), maxChars);
+      if (!reply.text) throw new ProviderError("empty_reply", `No visible text after retry (finish: ${result.finish})`);
+    }
+    return { reply, model: result.model };
   }
 
   async #timeoutFor(settings: ProviderSettings): Promise<number> {
@@ -587,7 +632,147 @@ export class Brain {
     }
   }
 
+  // ── Keepsakes and cards ─────────────────────────────────────────────────────
+
+  /** Whether the game can take cards right now (the plugin found the note inbox). */
+  get canLeaveCards(): boolean {
+    return this.#connected && this.#hello?.caps.card === "ok";
+  }
+
+  /** Keeps a note the player shared and lets her react to it in the bubble. */
+  async shareNote(text: string): Promise<Keepsake> {
+    const note = await this.options.keepsakes.addNote(text);
+    this.#emit({ type: "keepsakes" });
+    if (this.options.config.current.provider.configured) void this.#enqueue(() => this.#react([note]));
+    return note;
+  }
+
+  /**
+   * Keeps pictures the player shared. In the background she looks at each one once (if the model
+   * can see) and then reacts to the whole batch in one bubble.
+   */
+  async sharePictures(images: readonly Buffer[]): Promise<Picture[]> {
+    const pictures = await this.options.keepsakes.addPictures(images);
+    this.#emit({ type: "keepsakes" });
+    if (this.options.config.current.provider.configured) {
+      void this.#enqueue(async () => {
+        for (const picture of pictures) await this.#lookAt(picture);
+        this.#emit({ type: "keepsakes" });
+        const seen = pictures.map((picture) => this.options.keepsakes.get(picture.id)).filter((item) => item !== null);
+        if (seen.length > 0) await this.#react(seen);
+      });
+    }
+    return pictures;
+  }
+
+  /** Writes a card and leaves it in the game's inbox (or keeps it for the game's next start). */
+  writeCard(trigger: Card["trigger"]): Promise<CardResult> {
+    return this.#enqueue(() => this.#writeCard(trigger));
+  }
+
+  #react(keepsakes: readonly Keepsake[]): Promise<TurnResult> {
+    return this.#runTurn({ user: keepsakeCue(this.replyLanguage(), keepsakes), source: "keepsake" });
+  }
+
+  /** Asks the model once what a picture shows. Models that can't see just leave it to the caption. */
+  async #lookAt(picture: Picture): Promise<void> {
+    const settings = this.#providerSettings();
+    try {
+      const provider = createProvider(settings, (message) => this.#log.warn(message));
+      const data = (await this.options.keepsakes.readPicture(picture)).toString("base64");
+      const result = await provider.chat({
+        system: describePicturePrompt(this.replyLanguage()),
+        turns: [{ role: "user", content: "Describe the picture.", images: [{ mediaType: "image/jpeg", data }] }],
+        maxTokens: 400,
+        temperature: 0.2,
+        timeoutMs: await this.#timeoutFor(settings),
+      });
+      const seen = parseReply(result.text, 300).text;
+      if (seen) await this.options.keepsakes.describe(picture.id, { seen });
+    } catch (error) {
+      const failure = this.#describe(error, settings);
+      this.#log.info(`could not look at a shared picture (${failure.kind}: ${failure.detail}); she'll go by its caption`);
+    }
+  }
+
+  async #writeCard(trigger: Card["trigger"]): Promise<CardResult> {
+    const settings = this.#providerSettings();
+    const { keepsakes, memory } = this.options;
+    const language = this.replyLanguage();
+    const keepsake = keepsakes.pick();
+    try {
+      const provider = createProvider(settings, (message) => this.#log.warn(message));
+      const { system, user } = buildCardPrompt({
+        language,
+        persona: this.#persona(language),
+        now: new Date(),
+        playerName: this.#state?.playerName ?? "",
+        state: this.#state,
+        notes: memory.notes,
+        keepsake,
+        recentMessages: memory.recentUserMessages(8),
+        previousCards: keepsakes.cards.slice(0, 4).map((card) => card.text),
+      });
+      const { reply, model } = await this.#complete(
+        provider,
+        {
+          system,
+          turns: [{ role: "user", content: user }],
+          maxTokens: MAX_TOKENS,
+          temperature: this.options.config.current.advanced.temperature,
+          timeoutMs: await this.#timeoutFor(settings),
+        },
+        CARD_MAX_CHARS,
+      );
+      const card = await keepsakes.addCard({ text: reply.text, trigger, keepsakeId: keepsake?.id ?? null });
+      this.#log.info(`wrote a ${trigger} card with ${model}${keepsake ? ` about a shared ${keepsake.kind}` : ""}`);
+      if (this.canLeaveCards) this.options.send({ type: "card", id: card.id, text: card.text });
+      this.#emit({ type: "keepsakes" });
+      return { ok: true, card };
+    } catch (error) {
+      const failure = this.#describe(error, settings);
+      this.#log.error(`card failed: ${failure.kind}: ${failure.detail}`);
+      this.lastError = { ...failure, at: new Date().toISOString() };
+      this.#emit({ type: "error" });
+      return { ok: false, error: failure };
+    }
+  }
+
+  /** Cards written while the game was closed (e.g. from the setup dashboard) go out once it connects. */
+  #deliverPendingCards(): void {
+    if (!this.canLeaveCards) return;
+    const cutoff = Date.now() - PENDING_CARD_MAX_AGE_MS;
+    const pending = this.options.keepsakes.cards.filter((card) => !card.inGame && !card.error && Date.parse(card.at) > cutoff);
+    for (const card of pending.toReversed()) this.options.send({ type: "card", id: card.id, text: card.text });
+    if (pending.length > 0) this.#log.info(`delivering ${pending.length} card(s) written while the game was closed`);
+  }
+
+  /**
+   * At most one automatic card a day, and only once there's something new to write about (a few
+   * messages, or something shared), delivered while the player is away so it reads as a surprise.
+   */
+  #maybeWriteCard(): void {
+    const config = this.options.config.current;
+    const state = this.#state;
+    if (!config.features.cards || !config.provider.configured || !this.canLeaveCards || this.#turnActive || !state) return;
+    if (state.sleep || state.busy || state.drag || state.interacting) return;
+    if (Date.now() - this.#lastActivity < AUTO_CARD_AWAY_MS) return;
+    const { keepsakes, memory } = this.options;
+    const since = Date.parse(keepsakes.lastCard?.at ?? "1970-01-01T00:00:00Z");
+    if (Date.now() - since < AUTO_CARD_EVERY_MS) return;
+    const newMessages = memory.history.filter((turn) => turn.role === "user" && Date.parse(turn.at) > since).length;
+    const newKeepsakes = keepsakes.list.filter((keepsake) => Date.parse(keepsake.addedAt) > since).length;
+    if (newMessages < AUTO_CARD_MIN_MESSAGES && newKeepsakes === 0) return;
+    if (Date.now() < this.#nextAutoCardAt || Math.random() > 0.1) return; // spread out, not the first minute it's allowed
+    this.#nextAutoCardAt = Date.now() + AUTO_CARD_RETRY_MS;
+    void this.writeCard("auto");
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  #persona(language: Language): string {
+    return this.options.config.current.persona.custom?.trim() || defaultPersona(language);
+  }
 
   #providerSettings(): ProviderSettings {
     const { provider } = this.options.config.current;

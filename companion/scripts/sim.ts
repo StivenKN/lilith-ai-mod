@@ -1,6 +1,7 @@
 // Plays the game plugin's side of the bridge in a terminal, so the whole chat loop can be tried
 // without the game (or Windows).   bun scripts/sim.ts [langRaw]     (default "es-419")
 // Type a message to chat. Commands: /sleep, /wake, /busy, /free, /lang <code>, /settings, /quit
+// Cards written from the dashboard's Cards tab are printed as they reach the simulated inbox.
 
 import { join } from "node:path";
 import { createLineDecoder } from "../src/bridge.ts";
@@ -28,6 +29,10 @@ const show = (message: CompanionMessage) => {
       console.log(`\x1b[35m💬 (${message.emotion}, ${message.seconds}s)\x1b[0m\n${message.text}\n`);
       send({ type: "result", id: message.id, ok: true });
       return;
+    case "card":
+      console.log(`\x1b[33m💌 card in the inbox\x1b[0m\n${message.text}\n`);
+      send({ type: "result", id: message.id, ok: true });
+      return;
   }
 };
 const lines = createLineDecoder((line) => show(JSON.parse(line) as CompanionMessage));
@@ -44,7 +49,7 @@ send({
   unityVersion: "2021.3.45",
   bepinexVersion: "sim",
   gameDir: "",
-  caps: { say: "ok", busy: "ok", position: "simulated", state: "ok", language: "ok", playerName: "ok", tray: "simulated", hotkey: "simulated", chatWindow: "simulated" },
+  caps: { say: "ok", busy: "ok", position: "simulated", state: "ok", language: "ok", playerName: "ok", tray: "simulated", hotkey: "simulated", chatWindow: "simulated", card: "ok" },
 });
 
 console.log("Simulated game connected. Type to talk to Lilith (/quit to exit).");

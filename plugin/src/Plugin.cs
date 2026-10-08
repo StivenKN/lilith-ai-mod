@@ -14,7 +14,7 @@ namespace LilithAICompanion;
 /// <summary>
 /// Entry point. Keeps the game side thin: it launches LilithAICompanion.exe (which holds all the
 /// AI logic, settings and the dashboard), forwards chat from the popup, shows replies in Lilith's
-/// speech bubble, and reports her state. Each startup stage is isolated so one failure can't
+/// speech bubble, leaves her cards in the game's note inbox, and reports her state. Each startup stage is isolated so one failure can't
 /// stop the others, and the game's main thread is never blocked on I/O.
 /// </summary>
 [BepInPlugin(Guid, "Lilith AI Companion", Version)]
@@ -191,6 +191,14 @@ public sealed class Plugin : BasePlugin
                     var error = GameApi.Say(say.Text, say.Emotion, say.Seconds);
                     if (error is not null) Write("warn", $"could not show text in the bubble: {error}");
                     _bridge?.Send(Protocol.Result(say.Id, error is null, error));
+                });
+                break;
+            case CardMessage card:
+                _mainThread.Enqueue(() =>
+                {
+                    var error = GameApi.LeaveCard(card.Text);
+                    if (error is not null) Write("warn", $"could not leave a card in the inbox: {error}");
+                    _bridge?.Send(Protocol.Result(card.Id, error is null, error));
                 });
                 break;
             case ChatStatusMessage status when status.Text is not null:

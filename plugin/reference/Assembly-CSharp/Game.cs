@@ -37,6 +37,21 @@ public class Archive : Il2CppSystem.Object
     public string playerName { get => throw null; set => throw null; }
 }
 
+// The game's handwritten notes ("a little note Lilith left you"): SaveNote renders the text onto
+// note paper as note_*.png in NotesDirectory, and NotifySaved lights the tray's inbox badge.
+public class NoteImageSaver : Il2CppSystem.Object
+{
+    public NoteImageSaver(IntPtr pointer) : base(pointer) { }
+    public static string SaveNote(string text, bool flag) => throw null;
+}
+
+public class NoteInbox : Il2CppSystem.Object
+{
+    public NoteInbox(IntPtr pointer) : base(pointer) { }
+    public static string NotesDirectory { get => throw null; }
+    public static void NotifySaved() => throw null;
+}
+
 public class ISystemTray : Il2CppSystem.Object
 {
     public ISystemTray(IntPtr pointer) : base(pointer) { }

@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { Brain } from "./brain.ts";
 import { startBridge } from "./bridge.ts";
 import { ConfigStore, readTextFile, writeAtomic } from "./config.ts";
+import { Keepsakes } from "./keepsakes.ts";
 import { errorMessage, Logger } from "./log.ts";
 import { Memory } from "./memory.ts";
 import { dataPaths } from "./paths.ts";
@@ -71,10 +72,11 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  log.info("loading settings and memory");
+  log.info("loading settings, memory and keepsakes");
   const config = await ConfigStore.load(paths.config, (message) => log.warn(message));
   await config.watch(logger.scope("config"));
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
+  const keepsakes = await Keepsakes.load(paths.keepsakes, paths.pictures, (message) => log.warn(message));
 
   let bridge: { send: (message: CompanionMessage) => void } | null = null;
   let dashboardUrl = "";
@@ -82,6 +84,7 @@ async function main(): Promise<void> {
     version: VERSION,
     config,
     memory,
+    keepsakes,
     logger,
     send: (message) => bridge?.send(message),
     dashboardUrl: () => dashboardUrl,
@@ -104,6 +107,7 @@ async function main(): Promise<void> {
     mode,
     config,
     memory,
+    keepsakes,
     logger,
     brain,
     updater,

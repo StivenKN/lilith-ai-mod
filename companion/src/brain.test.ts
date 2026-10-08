@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Brain, computerEnabled } from "./brain.ts";
 import { FakeDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import { ConfigStore } from "./config.ts";
+import { Keepsakes } from "./keepsakes.ts";
 import { Logger } from "./log.ts";
 import { Memory } from "./memory.ts";
 import type { CompanionMessage } from "./protocol.ts";
@@ -15,25 +16,49 @@ import type { CompanionMessage } from "./protocol.ts";
 let dir = "";
 let server: ReturnType<typeof Bun.serve>;
 let respond: (request: Request) => Response | Promise<Response> = () => new Response();
+/** Request bodies the mock AI received, for checking what the model was told. */
+let requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "lilith-brain-"));
-  server = Bun.serve({ port: 0, fetch: (request) => new URL(request.url).pathname === "/props" ? new Response("Not found", { status: 404 }) : respond(request) });
+  server = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      if (new URL(request.url).pathname === "/props") return new Response("Not found", { status: 404 });
+      if (request.method === "POST") requests.push((await request.clone().json()) as (typeof requests)[number]);
+      return respond(request);
+    },
+  });
 });
 afterAll(async () => {
   server.stop(true);
   await rm(dir, { recursive: true, force: true });
 });
 
-async function setup(name: string, desktop?: DesktopStatus) {
+const reply = (content: string) => Response.json({ choices: [{ finish_reason: "stop", message: { content } }] });
+const gameState = { type: "state", idle: true, sleep: false, busy: false, interacting: false, drag: false, langRaw: "Spanish", playerName: "" } as const;
+const hello = (caps: Record<string, string> = {}) =>
+  ({ type: "hello", v: 1, pluginVersion: "t", gameVersion: "t", unityVersion: "t", bepinexVersion: "t", gameDir: "", caps }) as const;
+
+async function setup(name: string, options: { desktop?: DesktopStatus; connect?: boolean; caps?: Record<string, string> } = {}) {
+  requests = [];
   const config = await ConfigStore.load(join(dir, `${name}-config.json`));
   await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-x", configured: true }, apiKeys: { openai: "sk-test-abcdefghijklmnop" }, features: { computerControl: "off" } });
   const memory = await Memory.load(join(dir, `${name}-memory.json`));
+  const keepsakes = await Keepsakes.load(join(dir, `${name}-keepsakes.json`), join(dir, `${name}-pictures`));
   const logger = new Logger(null);
   const sent: CompanionMessage[] = [];
-  const brain = new Brain({ version: "test", config, memory, logger, send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(desktop ? { desktop } : {}) });
-  brain.handlePluginMessage({ type: "state", idle: true, sleep: false, busy: false, interacting: false, drag: false, langRaw: "Spanish", playerName: "" });
-  brain.handlePluginMessage({ type: "hello", v: 1, pluginVersion: "t", gameVersion: "t", unityVersion: "t", bepinexVersion: "t", gameDir: "", caps: {} });
-  return { brain, sent, logger, memory, config };
+  const brain = new Brain({ version: "test", config, memory, keepsakes, logger, send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(options.desktop ? { desktop: options.desktop } : {}) });
+  brain.handlePluginMessage(gameState);
+  if (options.connect !== false) brain.handlePluginMessage(hello(options.caps));
+  return { brain, sent, logger, memory, config, keepsakes };
+}
+
+/** Waits for background work (looking at pictures, reacting) to reach a point. */
+async function until(done: () => boolean) {
+  for (let tries = 0; !done(); tries++) {
+    if (tries > 200) throw new Error("timed out");
+    await Bun.sleep(10);
+  }
 }
 
 describe("Brain", () => {
@@ -130,7 +155,7 @@ test("Brain executes one tool turn, shows statuses, and stores only the user and
       ? { content: "[feliz] Abrí la calculadora." }
       : { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] } });
   };
-  const { brain, sent, memory, config } = await setup("computer", { available: true, desktop });
+  const { brain, sent, memory, config } = await setup("computer", { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "qwen" }, features: { computerControl: "auto", learnFacts: false } });
   expect(await brain.chat("Abre la calculadora", "game")).toMatchObject({ ok: true, text: "Abrí la calculadora." });
   expect(calls).toBe(2);
@@ -152,7 +177,7 @@ test("Brain falls back to ordinary chat when the model rejects tools", async () 
     plainCalls++;
     return Response.json({ choices: [{ finish_reason: "stop", message: { content: "[neutral] Solo puedo conversar." } }] });
   };
-  const { brain, config } = await setup("no-tools", { available: true, desktop });
+  const { brain, config } = await setup("no-tools", { desktop: { available: true, desktop } });
   await config.update({ features: { computerControl: "on", learnFacts: false } });
   expect(await brain.chat("hola", "dashboard")).toMatchObject({ ok: true, text: "Solo puedo conversar." });
   expect(plainCalls).toBe(1);
@@ -173,7 +198,7 @@ test("a newer queued message prevents superseded computer tasks from starting", 
       ? { content: "Hecho." }
       : { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name } } }] } });
   };
-  const { brain, config } = await setup("queued-computer", { available: true, desktop });
+  const { brain, config } = await setup("queued-computer", { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "queue" }, features: { computerControl: "auto", learnFacts: false } });
   const first = brain.chat("Old task", "dashboard");
   const second = brain.chat("New task", "dashboard");
@@ -204,7 +229,7 @@ test.each([false, true])("a second chat preserves the pending reply and prevents
     }
     return Response.json({ message: { content: user === "hola" ? "Hola, Conan." : "Estoy bien, ¿y tú?" } });
   };
-  const { brain, config, memory } = await setup(`pending-chat-${returnsTools}`, { available: true, desktop });
+  const { brain, config, memory } = await setup(`pending-chat-${returnsTools}`, { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: `pending-chat-${returnsTools}` }, features: { computerControl: "auto", learnFacts: false } });
   const first = brain.chat("hola", "game");
   await reached;
@@ -235,7 +260,7 @@ test("a newer chat still stops a turn after its first action", async () => {
     }
     return Response.json({ message: { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Notepad" } } }] } });
   };
-  const { brain, config } = await setup("cancel-after-action", { available: true, desktop });
+  const { brain, config } = await setup("cancel-after-action", { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "cancel-after-action" }, features: { computerControl: "auto", learnFacts: false } });
   const first = brain.chat("Abre Notepad", "game");
   await reached;
@@ -259,7 +284,7 @@ test("a tool rejection after desktop actions reports failure without restarting 
     if (body.messages.some((message) => message.role === "tool")) return Response.json({ error: "This model does not support tools" }, { status: 400 });
     return Response.json({ message: { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Notepad" } } }] } });
   };
-  const { brain, config } = await setup("post-action-failure", { available: true, desktop });
+  const { brain, config } = await setup("post-action-failure", { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "partial" }, features: { computerControl: "auto", learnFacts: false } });
   expect(await brain.chat("Open Notepad and type hello", "dashboard")).toMatchObject({ ok: false, error: { kind: "no_tools" } });
   expect(desktop.actions).toEqual([{ type: "openApp", name: "Notepad" }]);
@@ -272,7 +297,7 @@ test("an old provider check cannot overwrite capabilities after settings change"
   const waiting = new Promise<void>((resolve) => { release = resolve; });
   const reached = new Promise<void>((resolve) => { started = resolve; });
   respond = async () => { started(); await waiting; return Response.json({ capabilities: ["tools", "vision"] }); };
-  const { brain, config } = await setup("stale-computer-check", { available: true, desktop: new FakeDesktop() });
+  const { brain, config } = await setup("stale-computer-check", { desktop: { available: true, desktop: new FakeDesktop() } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "stale-check" } });
   const checking = brain.computerCheck();
   await reached;
@@ -302,7 +327,7 @@ test.each(["capability", "tool response"] as const)("changing settings during a 
     }
     return Response.json({ message: { content: "Hola, Conan." } });
   };
-  const { brain, config, memory } = await setup(`settings-before-action-${stage}`, { available: true, desktop });
+  const { brain, config, memory } = await setup(`settings-before-action-${stage}`, { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: `settings-before-action-${stage}` }, features: { computerControl: "auto", learnFacts: false } });
   const replying = brain.chat("hola", "game");
   await reached;
@@ -324,7 +349,7 @@ test("text-only compatible servers with image 500 and Jinja-disabled tools still
     plain++;
     return Response.json({ choices: [{ finish_reason: "stop", message: { content: "[neutral] Aquí sigo." } }] });
   };
-  const { brain, config } = await setup("text-server-compat", { available: true, desktop });
+  const { brain, config } = await setup("text-server-compat", { desktop: { available: true, desktop } });
   await config.update({ provider: { model: "llama-text" }, features: { computerControl: "auto", learnFacts: false } });
   expect(await brain.chat("hola", "dashboard")).toMatchObject({ ok: true, text: "Aquí sigo." });
   expect((await brain.chat("¿me escuchas?", "dashboard")).ok).toBe(true);
@@ -344,9 +369,53 @@ test("ordinary chat on the computer path retains empty-reply retry behavior", as
     budgets.push(body.options.num_predict);
     return Response.json({ message: { content: !body.tools && body.options.num_predict === 4096 ? "[feliz] Ahora sí." : "", thinking: "reasoning" }, done_reason: "length" });
   };
-  const { brain, memory, config } = await setup("computer-empty-chat", { available: true, desktop: new FakeDesktop() });
+  const { brain, memory, config } = await setup("computer-empty-chat", { desktop: { available: true, desktop: new FakeDesktop() } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "reasoning-chat" }, features: { computerControl: "auto", learnFacts: false } });
   expect(await brain.chat("hola", "dashboard")).toMatchObject({ ok: true, text: "Ahora sí.", emotion: "happy" });
   expect(budgets).toEqual([4096, 1024, 4096]);
   expect(memory.history.at(-1)?.content).toBe("Ahora sí.");
+});
+
+describe("Cards", () => {
+  test("writes a card about something the player shared and leaves it in the game's inbox", async () => {
+    respond = () => reply("Me contaste que estás aprendiendo guitarra. Tócame algo cuando puedas. — Lilith");
+    const { brain, sent, keepsakes } = await setup("card", { caps: { card: "ok" } });
+    const note = await keepsakes.addNote("Estoy aprendiendo a tocar guitarra");
+
+    const result = await brain.writeCard("manual");
+    expect(result).toMatchObject({ ok: true, card: { text: "Me contaste que estás aprendiendo guitarra. Tócame algo cuando puedas. — Lilith", keepsakeId: note.id } });
+    expect(JSON.stringify(requests[0]?.messages)).toContain("Estoy aprendiendo a tocar guitarra");
+    const card = sent.find((m) => m.type === "card");
+    expect(card).toMatchObject({ text: expect.stringContaining("guitarra") });
+
+    brain.handlePluginMessage({ type: "result", id: card?.type === "card" ? card.id : "", ok: true });
+    await until(() => keepsakes.cards[0]?.inGame === true);
+  });
+
+  test("keeps a card written while the game was closed and delivers it when the game connects", async () => {
+    respond = () => reply("Hoy pensé en ti. — Lilith");
+    const { brain, sent } = await setup("pending", { connect: false });
+    expect((await brain.writeCard("manual")).ok).toBe(true);
+    expect(sent.some((m) => m.type === "card")).toBe(false);
+
+    brain.handlePluginMessage(hello({ card: "ok" }));
+    // The plugin repeats hello when a capability changes; that must not deliver the card again.
+    brain.handlePluginMessage(hello({ card: "ok", tray: "ok" }));
+    expect(sent.filter((m) => m.type === "card")).toEqual([expect.objectContaining({ text: "Hoy pensé en ti. — Lilith" })]);
+  });
+
+  test("looks at a shared picture once, then reacts to what she saw", async () => {
+    respond = () => reply(requests.length === 1 ? "Un gato gris dormido sobre un teclado." : "[feliz] ¡Qué gato tan cómodo!");
+    const { brain, sent, keepsakes, memory } = await setup("picture");
+    const [picture] = await brain.sharePictures([Buffer.from([0xff, 0xd8, 0xff, 0xe0])]);
+    await until(() => sent.some((m) => m.type === "say" && m.text !== "…"));
+
+    expect(JSON.stringify(requests[0]?.messages)).toContain("data:image/jpeg;base64,");
+    expect(keepsakes.get(picture!.id)).toMatchObject({ seen: "Un gato gris dormido sobre un teclado." });
+    // The reaction is a text turn: the picture itself is only ever sent once.
+    expect(JSON.stringify(requests[1]?.messages)).toContain("Un gato gris dormido");
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain("base64");
+    expect(sent).toContainEqual(expect.objectContaining({ type: "say", text: "¡Qué gato tan cómodo!" }));
+    expect(memory.history.at(-1)).toMatchObject({ source: "keepsake" });
+  });
 });

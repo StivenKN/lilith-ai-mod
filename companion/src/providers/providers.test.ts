@@ -390,3 +390,48 @@ describe("computer sessions", () => {
     expect(JSON.stringify(server.bodies[1]?.tools)).toContain("type_text");
   });
 });
+
+describe("pictures", () => {
+  const withPicture = {
+    ...request,
+    turns: [{ role: "user" as const, content: "Describe the picture.", images: [{ mediaType: "image/jpeg" as const, data: "/9j/AAAA" }] }],
+  };
+  const lastMessage = (body: Record<string, unknown> | undefined) => (body?.messages as unknown[] | undefined)?.at(-1);
+
+  test.each([
+    [
+      "OpenAI-compatible",
+      () => completion("ok"),
+      (url: string) => createProvider({ preset: "custom", baseUrl: `${url}/v1`, model: "m", apiKey: "" }, noop),
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe the picture." },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/AAAA" } },
+        ],
+      },
+    ],
+    [
+      "Ollama",
+      () => Response.json({ message: { content: "ok" }, done_reason: "stop" }),
+      (url: string) => createProvider({ preset: "ollama", baseUrl: url, model: "qwen3.5:4b", apiKey: "" }, noop),
+      { role: "user", content: "Describe the picture.", images: ["/9j/AAAA"] },
+    ],
+    [
+      "Anthropic",
+      () => Response.json({ id: "msg", type: "message", role: "assistant", model: "m", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }),
+      (url: string) => createProvider({ preset: "anthropic", baseUrl: url, model: "claude-haiku-4-5", apiKey: "sk-ant-test-1234567890" }, noop),
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/AAAA" } },
+          { type: "text", text: "Describe the picture." },
+        ],
+      },
+    ],
+  ] as const)("%s sends them in its own format", async (_, reply, provider, expected) => {
+    const server = mock(reply);
+    await provider(server.url).chat(withPicture);
+    expect(lastMessage(server.bodies[0])).toEqual(expected);
+  });
+});

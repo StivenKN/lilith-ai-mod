@@ -48,6 +48,8 @@ export const ConfigSchema = z.object({
       speakFirst: z.boolean().default(false),
       speakFirstMinutes: z.number().int().min(5).max(240).default(30),
       learnFacts: z.boolean().default(true),
+      /** Now and then, write a card for the game's inbox from what the player shared (at most one a day). */
+      cards: z.boolean().default(true),
       /** Install new releases from GitHub on their own (they take effect on the next game launch). */
       autoUpdate: z.boolean().default(true),
       /** Automatic enables control for AI servers on this PC or LAN. */

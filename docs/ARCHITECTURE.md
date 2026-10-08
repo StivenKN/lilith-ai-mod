@@ -13,7 +13,7 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
         ├─ computer    Windows x64 FFI · screenshots · input · bounded tool loop
         └─ dashboard   Bun.serve on 127.0.0.1:47321+ → React app (setup wizard, settings, help)
 
-%APPDATA%\LilithAICompanion\   config.json · memory.json · logs\lilith-ai.log
+%APPDATA%\LilithAICompanion\   config.json · memory.json · keepsakes.json · keepsakes\*.jpg · logs\lilith-ai.log
 ```
 
 ## Why it's split this way
@@ -94,7 +94,7 @@ Defined in `companion/src/protocol.ts` (Zod) and mirrored in `plugin/src/Protoco
 | `state{idle, sleep, busy, interacting, drag, langRaw, playerName}` | `ready{v, version, dashboardUrl, hotkey, strings}` |
 | `hello{v, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps}` | `say{id, text, emotion, seconds}` |
 | `chat{text}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
-| `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | `yieldFocus{}` |
+| `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | `yieldFocus{}` · `card{id, text}` (only when `caps.card` is ok) |
 
 Bump `PROTOCOL_VERSION` on both sides for breaking changes. On a version mismatch, the companion exits
 with code 2 and the plugin shows "reinstall the mod" instead of restarting it.
@@ -165,9 +165,32 @@ tool round trip. The fake desktop is never selected unless that environment vari
 | language | `GameSetting.Language` |
 | playerName | `Archive.Instance.playerName` |
 | tray | `ShowSystemTray.instance.tray.AddItem(label, Il2CppSystem.Action)`, re-added when the game rebuilds the menu |
+| card | `NoteImageSaver.SaveNote(text, false)` then `NoteInbox.NotifySaved()` |
 
 Hotkeys use `RegisterHotKey`, so the popup can take keyboard focus from any app. They don't use
 Unity's `Input`: the game's click-through overlay is rarely focused, so Unity misses the keys.
+
+## Cards
+
+`companion/src/keepsakes.ts` stores what the player shares; `brain.ts` writes the cards.
+
+- **Keepsakes** are notes and pictures added in the dashboard's Cards tab. Nothing is collected on
+  its own. The browser re-encodes each picture to a JPEG of at most 1280 px before upload, which also
+  drops EXIF data. The server accepts only JPEGs and serves them back only by id, to the logged-in
+  dashboard.
+- **Seeing once.** When a picture arrives, the model is asked once for a one-line description (image
+  input in all three adapters). Models that can't see just fail that call, and she goes by the
+  caption. Everything after that is text, so cards work with any model and pictures aren't re-sent.
+- **Reacting.** Sharing runs a normal chat turn with a cue describing what was shared, so she answers
+  in her bubble and it lands in her conversation history.
+- **Writing.** A card draws on the least recently used keepsake, recent messages and known facts, with
+  rules that keep it warm without being unsettling: she speaks only of what was shown or told, never of
+  files, AI or memory.
+- **Delivering.** The plugin calls the game's own note saver on the main thread and answers `result`,
+  which marks the card as in the inbox. Cards written while the game was closed go out on the next
+  `hello`.
+- **Automatic cards** come at most once every 20 hours. They need a few new messages or something
+  newly shared, the player away for 10 minutes, and Lilith idle and awake.
 
 ## Updates
 

@@ -10,7 +10,7 @@ Keep two things handy:
 | # | Do | Expect |
 |---|---|---|
 | 1 | Extract the zip, run `LilithAICompanion.exe` with the game closed | Browser opens the setup wizard; game folder detected; install succeeds |
-| 2 | Start the game from Steam, wait for the first launch | `LogOutput.log` lists `capability <name>: ok` for say, busy, state, position, language, playerName. Write down any that aren't ok, with the reason. |
+| 2 | Start the game from Steam, wait for the first launch | `LogOutput.log` lists `capability <name>: ok` for say, busy, state, position, language, playerName, card. Write down any that aren't ok, with the reason. |
 | 3 | Task Manager → Details | `LilithAICompanion.exe` running, no console window |
 | 4 | With a browser focused, press **F7** | Chat popup appears near Lilith, focused, on the right monitor, sharp at 150% scaling. Esc closes it and gives focus back to the browser |
 | 5 | Type `¿Qué tal? ñandú, pingüino, ¡acción!` (dead keys and AltGr) and press Enter | Text appears correctly in the popup; the bubble shows "…", then her reply |
@@ -40,6 +40,8 @@ Keep two things handy:
 | 29 | Set Windows' primary mouse button to Right; repeat primary click, context click and drag, then restore the setting | Primary clicks activate, context clicks open menus, drags use the primary button and no button remains held. |
 | 30 | In the companion source folder, run `bun test src/computer/windows.test.ts -t Restricted`; also test app lookup on an account with Restricted PowerShell policy | The catalog contains names and AppIDs without a script-policy error. The test sets Restricted only for its lookup subprocess; the user's policy is unchanged. |
 | 31 | Chat casually with small local tool models in Automatic mode, including a follow-up while a reply is pending | Ordinary conversation completes without tools, focus handoff or desktop actions. |
+| 32 | Dashboard → **Cards**: share a note, then add a phone photo | She reacts in the bubble each time; the photo shows "She saw: …" (with a model that can see) |
+| 33 | **Cards** → Ask for a card now | The tray's note badge lights up; the inbox shows the card on the game's note paper, accents intact. The dashboard marks it "in the game's inbox" |
 
 ## Things to report back
 
@@ -50,3 +52,5 @@ These help tune the defaults:
 - Whether the bubble wraps lines on its own. If text overflows or looks cramped, adjust
   **AI → Advanced → bubble line width / lines** and say which values look right.
 - Where the popup appears relative to Lilith, especially with multiple monitors or scaling.
+- How a long card looks on the note paper (does the text fit, wrap, or get cut?). The length limit is
+  `CARD_MAX_CHARS` in `companion/src/prompt.ts`.

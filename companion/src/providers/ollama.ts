@@ -55,7 +55,12 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
             {
               body: {
                 model: options.model,
-                messages: [{ role: "system", content: request.system }, ...normalizeTurns(request.turns)],
+                messages: [
+                  { role: "system", content: request.system },
+                  ...normalizeTurns(request.turns).map(({ role, content, images }) =>
+                    images?.length ? { role, content, images: images.map((image) => image.data) } : { role, content },
+                  ),
+                ],
                 stream: false,
                 ...(useThink ? { think: false } : {}),
                 keep_alive: KEEP_ALIVE,
@@ -105,7 +110,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
 
     agent(request) {
       type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
-      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns)];
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(({ role, content }) => ({ role, content }))];
       let pending: ToolCall[] = [];
       let sequence = 0;
       return {

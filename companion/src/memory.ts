@@ -13,7 +13,8 @@ const StoredTurn = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string(),
   at: z.string(),
-  source: z.enum(["game", "dashboard", "speakFirst"]).default("game"),
+  /** "keepsake": the player shared a note or picture and she reacted to it. */
+  source: z.enum(["game", "dashboard", "speakFirst", "keepsake"]).default("game"),
   /** A near-duplicate reply: shown in the transcript, excluded from the model's context. */
   repeat: z.boolean().optional(),
 });
