@@ -80,6 +80,7 @@ async function main(): Promise<void> {
 
   log.info("loading settings and memory");
   const config = await ConfigStore.load(paths.config, (message) => log.warn(message));
+  await config.watch(logger.scope("config"));
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
 
   let bridge: { send: (message: CompanionMessage) => void } | null = null;
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
     log.info(`shutting down: ${reason}`);
     brain.stop();
     updater.stop();
+    config.close();
     server.stop();
     await rm(paths.instance, { force: true });
     process.exit(code);

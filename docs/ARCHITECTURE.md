@@ -45,6 +45,15 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
    whenever settings or the game language change.
 4. If no AI is configured yet, the companion opens the dashboard's setup page in the browser.
 
+## Live settings
+
+Nothing needs a restart after a settings change:
+- The brain reads the settings on every turn, so provider, model, persona, language and reply
+  options apply from the next reply. The hotkey and popup strings reach the game in a new `ready`.
+- `config.json` is watched. The setup exe and the game's copy can both be open, each with its own
+  dashboard, and a save in either one (or a hand edit) applies in the other within a moment. Open
+  dashboards refresh through a `config` server event. An invalid edit is logged and ignored.
+
 ## A chat turn
 
 1. The player presses F7, the popup opens next to Lilith, and they type and press Enter. The plugin
