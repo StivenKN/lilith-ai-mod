@@ -5,13 +5,18 @@ import { call, useRpc, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
 import { Field, Toggle, useTr } from "../ui.tsx";
 
-export function LilithPage(props: { overview: Overview; refresh: () => void }) {
+export function LilithPage(props: { overview: Overview; tick: number; refresh: () => void }) {
   const tr = useTr();
   const { config } = props.overview;
   const persona = useRpc("persona");
-  const notes = useRpc("notes");
+  const memory = useRpc("memory");
   const [personaText, setPersonaText] = useState("");
   const [notesText, setNotesText] = useState("");
+  const [summaryText, setSummaryText] = useState("");
+  /** What the boxes last showed from the server, to tell the player's edits from background updates. */
+  const shown = useRef({ notes: "", summary: "" });
+  const [summarizing, setSummarizing] = useState(false);
+  const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [computer, setComputer] = useState<Output<"computerCheck"> | null>(null);
@@ -27,9 +32,19 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
   useEffect(() => {
     if (persona.data) setPersonaText(persona.data.custom ?? persona.data.builtIn);
   }, [persona.data]);
+  // She updates her notes and summary in the background: show the new ones, except in a box the player is editing.
   useEffect(() => {
-    if (notes.data) setNotesText(notes.data.join("\n"));
-  }, [notes.data]);
+    void memory.reload();
+  }, [props.tick]);
+  useEffect(() => {
+    if (!memory.data) return;
+    const next = { notes: memory.data.notes.join("\n"), summary: memory.data.summary };
+    // Updaters run later, during render: compare with what was shown before this update.
+    const previous = shown.current;
+    shown.current = next;
+    setNotesText((current) => (current === previous.notes ? next.notes : current));
+    setSummaryText((current) => (current === previous.summary ? next.summary : current));
+  }, [memory.data]);
 
   const saveSettings = async (patch: SettingsPatch) => {
     await call("saveSettings", patch);
@@ -38,6 +53,21 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
   const flash = (message: string) => {
     setStatus(message);
     setTimeout(() => setStatus(null), 2500);
+  };
+
+  const summarizeNow = async () => {
+    setSummarizing(true);
+    setMemoryStatus(null);
+    try {
+      const result = await call("summarizeNow");
+      if (result.error) setMemoryStatus(tr("lilith.summarizeFailed", { message: result.error.message }));
+      else setMemoryStatus(tr(result.summarized > 0 ? "lilith.summarized" : "lilith.nothingToSummarize"));
+      await memory.reload();
+    } catch (error) {
+      setMemoryStatus(tr("lilith.summarizeFailed", { message: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setSummarizing(false);
+    }
   };
 
   const savePersona = async (custom: string | null) => {
@@ -86,14 +116,37 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
         <button
           className="secondary"
           onClick={() =>
-            void call("saveNotes", { notes: notesText.split("\n") }).then(async () => {
-              await notes.reload();
+            void call("saveNotes", { notes: notesText.split("\n") }).then(async (notes) => {
+              setNotesText(notes.join("\n"));
+              await memory.reload();
               flash(tr("common.saved"));
             })
           }
         >
           {tr("lilith.notesSave")}
         </button>
+      </div>
+
+      <h2>{tr("lilith.summaryTitle")}</h2>
+      <p className="hint">{tr("lilith.summaryIntro")}</p>
+      <textarea value={summaryText} placeholder={tr("lilith.summaryEmpty")} onChange={(event) => setSummaryText(event.target.value)} />
+      <div className="row" style={{ marginTop: 10 }}>
+        <button
+          className="secondary"
+          onClick={() =>
+            void call("saveSummary", { summary: summaryText }).then(async (summary) => {
+              setSummaryText(summary);
+              await memory.reload();
+              flash(tr("common.saved"));
+            })
+          }
+        >
+          {tr("lilith.summarySave")}
+        </button>
+        <button className="quiet" disabled={summarizing || !config.provider.configured} onClick={() => void summarizeNow()}>
+          {tr(summarizing ? "lilith.summarizing" : "lilith.summarizeNow")}
+        </button>
+        {memoryStatus && <span role="status" className="hint">{memoryStatus}</span>}
       </div>
 
       <h2>{tr("lilith.behaviorTitle")}</h2>
@@ -152,7 +205,13 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
       <button
         className="secondary danger"
         onClick={() => {
-          if (confirm(tr("lilith.historyConfirm"))) void call("clearHistory").then(() => flash(tr("lilith.historyCleared")));
+          if (confirm(tr("lilith.historyConfirm"))) {
+            void call("clearHistory").then(async () => {
+              setSummaryText("");
+              await memory.reload();
+              flash(tr("lilith.historyCleared"));
+            });
+          }
         }}
       >
         {tr("lilith.historyClear")}

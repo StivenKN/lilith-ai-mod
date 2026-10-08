@@ -6,6 +6,8 @@
 // An Ollama model is in memory only while it's needed: it loads when the player opens the chat,
 // Ollama frees it after the idle time in the settings, and it's freed at once when the game
 // closes or another model is chosen.
+// Memory upkeep (updating the notes, folding old turns into the summary) runs when the player
+// pauses, between turns, and a new message interrupts it, so it never delays a reply.
 
 import { rm } from "node:fs/promises";
 import type { Config, ConfigStore } from "./config.ts";
@@ -13,13 +15,13 @@ import { apiKeyFor, type Hotkey } from "./config.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import type { Action } from "./computer/actions.ts";
-import type { Capabilities, ChatRequest, ChatResult } from "./providers/types.ts";
+import type { Capabilities, ChatRequest, ChatResult, ChatTurn } from "./providers/types.ts";
 import { translator, type Translate } from "./i18n.ts";
 import { resolveLanguage, uiLocaleFor, type Language, type UiLocale } from "./languages.ts";
 import type { Log, Logger } from "./log.ts";
 import { errorMessage } from "./log.ts";
 import type { Card, Keepsake, Keepsakes, Picture } from "./keepsakes.ts";
-import type { Memory, StoredTurn } from "./memory.ts";
+import { contextBudget, noteChangesFormat, parseNoteChanges, parseSummaryLines, type Memory, type StoredTurn, type UpkeepJob } from "./memory.ts";
 import {
   avoidRepeatCue,
   buildCardPrompt,
@@ -28,8 +30,10 @@ import {
   defaultPersona,
   describePicturePrompt,
   keepsakeCue,
-  learnFactsPrompt,
+  notesPrompt,
   speakFirstCue,
+  summaryPrompt,
+  withTurnNote,
   type PromptContext,
 } from "./prompt.ts";
 import { createProvider, isLocalProvider, ProviderError, type ErrorKind, type Provider } from "./providers/index.ts";
@@ -37,14 +41,21 @@ import type { ProviderSettings } from "./providers/index.ts";
 import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/ollama.ts";
 import { getPreset, isLocalUrl } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
-import { isRepeat, paginate, parseReply } from "./reply.ts";
+import { paginate, parseReply, repeatedSentences, withoutSentences } from "./reply.ts";
 import { createSearcher, findSearchRequest, stripSearchTags } from "./search.ts";
 import type { SpokenLanguage } from "./voice/catalog.ts";
 import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
 
 const MAX_TOKENS = 1024;
 const RETRY_MAX_TOKENS = 4096;
-const LEARN_EVERY = 6;
+/** The notes are updated once this many new messages from the player have come in. */
+const LEARN_EVERY = 4;
+/** Memory upkeep starts once the player has paused this long after her reply. */
+const UPKEEP_DELAY_MS = 15_000;
+/** Upkeep runs in the background and a new message stops it, so it may take its time on slow PCs. */
+const UPKEEP_TIMEOUT_MS = 300_000;
+/** A reply that repeats her is kept, minus the repeats, if this much new is left; otherwise it's asked again. */
+const MIN_FRESH_CHARS = 24;
 /** Automatic cards: at most one this often, only after this much new to write about, while the player is away. */
 const AUTO_CARD_EVERY_MS = 20 * 3600_000;
 const AUTO_CARD_MIN_MESSAGES = 4;
@@ -59,6 +70,10 @@ export type TurnResult =
   | { ok: true; text: string; emotion: Emotion; latencyMs: number; model: string }
   | { ok: false; error: TurnFailure };
 export type CardResult = { ok: true; card: Card } | { ok: false; error: TurnFailure };
+/** Upkeep requests share one timeout and the signal that stops them when a message comes in. */
+type UpkeepHttp = Required<Pick<ChatRequest, "timeoutMs" | "signal">>;
+/** What a memory upkeep pass did, for the dashboard's "Summarize now". */
+export type UpkeepResult = { summarized: number; notesChanged: number; error?: TurnFailure };
 
 export interface BrainOptions {
   version: string;
@@ -78,7 +93,7 @@ export interface BrainOptions {
 }
 
 export interface BrainEvent {
-  type: "plugin" | "turn" | "error" | "keepsakes";
+  type: "plugin" | "turn" | "error" | "keepsakes" | "memory";
 }
 
 export class Brain {
@@ -104,6 +119,9 @@ export class Brain {
   #computerDone: Promise<void> = Promise.resolve();
   #computerEpoch = 0;
   #computerActed = false;
+  #upkeepTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The running upkeep pass. Once its summary is overdue, a new message no longer stops it. */
+  #upkeepRun: { abort: AbortController; overdue: boolean } | null = null;
   #stopped = false;
   lastError: (TurnFailure & { at: string }) | null = null;
   lastVoiceError: { at: string; detail: string } | null = null;
@@ -137,6 +155,7 @@ export class Brain {
   async stop(): Promise<void> {
     this.#stopped = true;
     if (this.#speakFirstTimer) clearInterval(this.#speakFirstTimer);
+    this.#pauseUpkeep(true);
     this.#cancelComputer();
     await this.#computerDone;
   }
@@ -196,9 +215,10 @@ export class Brain {
     }
   }
 
-  /** The game closed: stop any computer task and free the local model, which nothing needs until it's back. */
+  /** The game closed: stop any computer task and memory upkeep, and free the local model, which nothing needs until it's back. */
   async pluginDisconnected(): Promise<void> {
     this.#cancelComputer();
+    this.#pauseUpkeep(true);
     this.#connected = false;
     this.#emit({ type: "plugin" });
     const model = ollamaModel(this.options.config.current);
@@ -297,6 +317,7 @@ export class Brain {
     if (this.#computerActed) this.#computerAbort?.abort();
     const computerEpoch = this.#computerEpoch;
     this.#lastActivity = Date.now();
+    this.#pauseUpkeep();
     return this.#enqueue(() => this.#runTurn({ user: text.trim(), source, computerEpoch, thinking }));
   }
 
@@ -381,7 +402,8 @@ export class Brain {
       const onSearch = (query: string) => {
         if (!speakFirst) this.options.send({ type: "chatStatus", kind: "thinking", text: tr("status.searching", { query }) });
       };
-      const turns = [...this.options.memory.promptTurns(), { role: "user" as const, content: userTurn }];
+      const budget = contextBudget(isLocalProvider(settings));
+      const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget), { role: "user", content: userTurn }];
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
       const { text, emotion, model } = useComputer
@@ -397,9 +419,7 @@ export class Brain {
       if (inGame) void this.#showPages(text, emotion, speakFirst);
       this.#emit({ type: "turn" });
 
-      if (config.features.learnFacts && this.options.memory.pendingForLearning >= LEARN_EVERY) {
-        void this.#enqueue(() => this.#learnFacts(provider, settings, language));
-      }
+      this.#scheduleUpkeep();
       return { ok: true, text, emotion, latencyMs, model };
     } catch (error) {
       const failure = this.#describe(error, settings);
@@ -470,16 +490,10 @@ export class Brain {
       if (epoch !== this.#computerEpoch) return await fallback();
       if (!capabilities.tools) return await fallback();
       const searcher = createSearcher(config.search);
-      const context: PromptContext = {
-        language, persona: config.persona.custom?.trim() || defaultPersona(language), now: new Date(),
-        playerName: this.#state?.playerName ?? "", state: this.#state, notes: this.options.memory.notes,
-        maxChars: config.advanced.maxReplyChars,
-        computer: { vision: capabilities.vision, screen: status.desktop.screen },
-        ...(searcher ? { search: { kind: "available" as const } } : {}),
-      };
+      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, screen: status.desktop.screen } };
       let lastStatus = "";
       const result = await runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns, vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(turns, context), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
         desktop: status.desktop, vision: capabilities.vision, http,
         canAct: () => epoch === this.#computerEpoch,
         yieldFocus: () => this.options.send({ type: "yieldFocus" }),
@@ -500,7 +514,8 @@ export class Brain {
         : result.outcome === "limit" ? tr("computer.limit") : result.text;
       const query = result.outcome === "done" && searcher ? findSearchRequest(text) : null;
       const initialReply = parseReply(stripSearchTags(text), config.advanced.maxReplyChars);
-      if (!acted && result.outcome === "done" && (query || !initialReply.text || isRepeat(initialReply.text, this.options.memory.recentReplies()))) return await fallback();
+      // A plain chat answer that mostly repeats her goes through ordinary chat, which asks again.
+      if (!acted && result.outcome === "done" && (query || !initialReply.text || repeats(initialReply.text, this.options.memory.recentReplies()).mostly)) return await fallback();
       if (query && searcher) {
         onSearch(query);
         let search: NonNullable<PromptContext["search"]>;
@@ -508,15 +523,15 @@ export class Brain {
         catch (error) { this.#log.warn(`computer turn search failed: ${errorMessage(error)}`); search = { kind: "failed", query }; }
         // This final answer has no tools, so a search cannot repeat desktop actions.
         const answer = await provider.chat({
-          system: buildSystemPrompt({ ...context, search }),
-          turns: [...turns, { role: "assistant", content: text }, { role: "user", content: "Answer using the search results. Do not perform or claim any additional computer actions." }],
+          system: buildSystemPrompt(context),
+          turns: withNote([...withNote(turns, context), { role: "assistant", content: text }, { role: "user", content: "Answer using the search results. Do not perform or claim any additional computer actions." }], { ...context, search }),
           maxTokens: MAX_TOKENS, temperature: config.advanced.temperature, ...http,
         });
         text = answer.text;
       }
       const reply = parseReply(stripSearchTags(text), config.advanced.maxReplyChars);
       this.#warm.add(warmKey(settings));
-      return { ...reply, text: reply.text || tr("computer.empty"), model: result.model || settings.model };
+      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model };
     } catch (error) {
       if (controller.signal.aborted) return stopped();
       if (config === this.options.config.current && error instanceof ProviderError && error.kind === "no_tools") {
@@ -561,20 +576,10 @@ export class Brain {
   ) {
     const config = this.options.config.current;
     const searcher = createSearcher(config.search);
-    const context: PromptContext = {
-      language,
-      persona: this.#persona(language),
-      now: new Date(),
-      playerName: this.#state?.playerName ?? "",
-      state: this.#state,
-      notes: this.options.memory.notes,
-      maxChars: config.advanced.maxReplyChars,
-      ...(searcher ? { search: { kind: "available" as const } } : {}),
-    };
-    let system = buildSystemPrompt(context);
+    const context = this.#promptContext(language, searcher !== null);
     let request = {
-      system,
-      turns,
+      system: buildSystemPrompt(context),
+      turns: withNote(turns, context),
       maxTokens: MAX_TOKENS,
       temperature: config.advanced.temperature,
       timeoutMs: await this.#timeoutFor(settings),
@@ -594,17 +599,26 @@ export class Brain {
         this.#log.warn(`web search (${config.search.mode}) "${query}" failed: ${this.options.logger.redact(errorMessage(error))}`);
         search = { kind: "failed", query };
       }
-      system = buildSystemPrompt({ ...context, search });
-      request = { ...request, system };
+      request = { ...request, turns: withNote(turns, { ...context, search }) };
       result = await provider.chat(request);
     }
     const { reply: first, model } = await this.#complete(provider, request, config.advanced.maxReplyChars, result);
     let reply = first;
-    if (isRepeat(reply.text, this.options.memory.recentReplies())) {
-      this.#log.info("near-duplicate reply; asking once for something new");
-      const retried = await provider.chat({ ...request, system: system + avoidRepeatCue(language) });
+    // Small models fall into loops (the same closing question on every reply). A reply that's
+    // mostly repeats is asked for again; whatever repeats remain are left out, so they never
+    // reach her history and can't feed the loop.
+    const recent = this.options.memory.recentReplies();
+    if (repeats(reply.text, recent).mostly) {
+      this.#log.info("reply mostly repeated her earlier words; asking once for something new");
+      const cued = request.turns.map((turn, index) => (index === request.turns.length - 1 ? { ...turn, content: turn.content + avoidRepeatCue(language) } : turn));
+      const retried = await provider.chat({ ...request, turns: cued, temperature: Math.min(2, request.temperature + 0.2) });
       const retry = parseReply(stripSearchTags(retried.text), config.advanced.maxReplyChars);
       if (retry.text) reply = retry;
+    }
+    const kept = repeats(reply.text, recent);
+    if (kept.text !== reply.text) {
+      this.#log.info(`left out ${kept.repeated} sentence(s) she had already said`);
+      reply = { ...reply, text: kept.text };
     }
     this.#warm.add(warmKey(settings));
     return { text: reply.text, emotion: reply.emotion, model };
@@ -743,27 +757,122 @@ export class Brain {
     void this.#enqueue(() => this.#runTurn({ user: null, source: "speakFirst", idleMinutes }));
   }
 
-  async #learnFacts(provider: Provider, settings: ProviderSettings, language: Language): Promise<void> {
+  // ── Memory upkeep ──────────────────────────────────────────────────────────
+
+  /** Upkeep waits for a pause after her reply, so it doesn't hold up the player's next message. */
+  #scheduleUpkeep(): void {
+    if (this.#stopped) return;
+    if (this.#upkeepTimer) clearTimeout(this.#upkeepTimer);
+    this.#upkeepTimer = setTimeout(() => {
+      this.#upkeepTimer = null;
+      void this.#enqueue(() => this.#upkeep(false));
+    }, UPKEEP_DELAY_MS);
+    this.#upkeepTimer.unref();
+  }
+
+  /**
+   * A new message comes first: upkeep waits for the next pause, and a running pass stops unless its
+   * summary is overdue. `closing` stops that one too: no reply is waiting, and the local model is
+   * about to be freed, which another request would load again.
+   */
+  #pauseUpkeep(closing = false): void {
+    if (this.#upkeepTimer) clearTimeout(this.#upkeepTimer);
+    this.#upkeepTimer = null;
+    if (closing || !this.#upkeepRun?.overdue) this.#upkeepRun?.abort.abort();
+  }
+
+  /**
+   * Runs memory upkeep now instead of at the next pause. With `compact`, everything but the recent
+   * turns is folded into the summary, even below the usual threshold (the dashboard's "Summarize
+   * now"). Resolves once it's done.
+   */
+  tidyMemory(compact = false): Promise<UpkeepResult> {
+    if (this.#upkeepTimer) clearTimeout(this.#upkeepTimer);
+    this.#upkeepTimer = null;
+    return this.#enqueue(() => this.#upkeep(compact));
+  }
+
+  /**
+   * Updates the notes from the exchanges they haven't read, then folds the oldest turns into the
+   * summary if the conversation has grown past its budget. Each step is one small, focused request
+   * a 4B model handles well, and each is saved as soon as it's done. A new message stops it, unless
+   * the turns have already outgrown the window: then the summary is overdue, and finishing it
+   * once is cheaper than every following reply dropping turns it never summarized.
+   */
+  async #upkeep(compact: boolean): Promise<UpkeepResult> {
+    const result: UpkeepResult = { summarized: 0, notesChanged: 0 };
+    const config = this.options.config.current;
+    if (!config.provider.configured || this.#stopped) return result;
+    const { memory } = this.options;
+    const settings = this.#providerSettings();
+    const language = this.replyLanguage();
+    const budget = contextBudget(isLocalProvider(settings));
+    const run = { abort: new AbortController(), overdue: false };
+    this.#upkeepRun = run;
     try {
-      const messages = this.options.memory.recentUserMessages(12);
-      const result = await provider.chat({
-        system: learnFactsPrompt(language, this.options.memory.notes),
-        turns: [{ role: "user", content: messages.map((message) => `- ${message}`).join("\n") }],
-        maxTokens: 600,
-        temperature: 0.2,
-        timeoutMs: await this.#timeoutFor(settings),
-      });
-      const facts = result.text
-        .replace(/<think(ing)?>[\s\S]*?<\/think(ing)?>/gi, "")
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith("-"))
-        .map((line) => line.replace(/^-\s*/, ""));
-      const added = await this.options.memory.addNotes(facts);
-      if (added.length > 0) this.#log.info(`learned ${added.length} new note(s) about the player`);
+      const provider = createProvider(settings, (message) => this.#log.warn(message));
+      const http = { timeoutMs: UPKEEP_TIMEOUT_MS, signal: run.abort.signal };
+      if (config.features.learnFacts) {
+        for (let job = memory.learning(compact ? 1 : LEARN_EVERY); job; job = memory.learning(compact ? 1 : LEARN_EVERY)) {
+          const changed = await this.#updateNotes(provider, job, language, http);
+          if (changed === null) break;
+          result.notesChanged += changed;
+        }
+      }
+      run.overdue = memory.overdue(budget);
+      for (let job = memory.compaction(budget, compact); job; job = memory.compaction(budget, compact)) {
+        if (!(await this.#summarize(provider, job, language, http))) break;
+        result.summarized += job.turns.length;
+      }
     } catch (error) {
-      this.#log.warn(`could not update notes: ${errorMessage(error)}`);
+      if (run.abort.signal.aborted) {
+        this.#log.info("memory upkeep paused; it continues after her next reply");
+      } else {
+        const failure = this.#describe(error, settings);
+        this.#log.warn(`memory upkeep failed: ${failure.kind}: ${failure.detail}`);
+        result.error = failure;
+      }
+    } finally {
+      if (this.#upkeepRun === run) this.#upkeepRun = null;
     }
+    if (result.summarized > 0 || result.notesChanged > 0) this.#emit({ type: "memory" });
+    return result;
+  }
+
+  /**
+   * One notes update from a slice of the conversation. Returns how many notes changed, or null if
+   * the player edited her memory meanwhile. An unusable answer skips those messages rather than
+   * asking again forever. Nothing the player said is logged.
+   */
+  async #updateNotes(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<number | null> {
+    const { memory } = this.options;
+    const { system, user } = notesPrompt(language, memory.notes, job.turns, new Date());
+    const answer = await provider.chat({ system, turns: [{ role: "user", content: user }], maxTokens: 600, temperature: 0.2, json: noteChangesFormat, ...http });
+    const changes = parseNoteChanges(answer.text);
+    if (!changes) {
+      this.#log.warn(`notes update was not valid JSON (${answer.text.length} chars, finish: ${answer.finish}); skipping those messages`);
+      await memory.skipLearning(job);
+      return 0;
+    }
+    const applied = await memory.applyNoteChanges(job, changes);
+    if (!applied) return null;
+    const changed = applied.added + applied.updated + applied.removed;
+    if (changed > 0) this.#log.info(`notes updated: ${applied.added} added, ${applied.updated} corrected, ${applied.removed} removed`);
+    return changed;
+  }
+
+  /** Folds one slice of older turns into the summary. Returns false if it couldn't (try again later). */
+  async #summarize(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<boolean> {
+    const { system, user } = summaryPrompt(language, this.options.memory.summary, job.turns);
+    const answer = await provider.chat({ system, turns: [{ role: "user", content: user }], maxTokens: 400, temperature: 0.2, ...http });
+    const lines = parseSummaryLines(answer.text);
+    if (!lines) {
+      this.#log.warn(`summary lines came back unusable (${answer.text.length} chars, finish: ${answer.finish}); trying again at the next pause`);
+      return false;
+    }
+    if (!(await this.options.memory.applySummary(job, lines))) return false;
+    this.#log.info(`summarized ${job.turns.length} older messages in ${lines.length} line(s)`);
+    return true;
   }
 
   // ── Keepsakes and cards ─────────────────────────────────────────────────────
@@ -843,6 +952,7 @@ export class Brain {
         playerName: this.#state?.playerName ?? "",
         state: this.#state,
         notes: memory.notes,
+        summary: memory.summary,
         keepsake,
         recentMessages: memory.recentUserMessages(8),
         previousCards: keepsakes.cards.slice(0, 4).map((card) => card.text),
@@ -908,6 +1018,24 @@ export class Brain {
     return this.options.config.current.persona.custom?.trim() || defaultPersona(language);
   }
 
+  /** What a chat prompt is built from: persona, what she remembers, and the moment. */
+  #promptContext(language: Language, searchAvailable: boolean): PromptContext {
+    const { config, memory } = this.options;
+    return {
+      language,
+      persona: this.#persona(language),
+      now: new Date(),
+      playerName: this.#state?.playerName ?? "",
+      state: this.#state,
+      notes: memory.notes,
+      summary: memory.summary,
+      lastTalked: memory.lastUserMessageAt,
+      recentReplies: memory.recentReplies(2),
+      maxChars: config.current.advanced.maxReplyChars,
+      ...(searchAvailable ? { search: { kind: "available" as const } } : {}),
+    };
+  }
+
   #providerSettings(): ProviderSettings {
     const config = this.options.config.current;
     const { provider } = config;
@@ -963,6 +1091,21 @@ type OllamaModel = Pick<ProviderSettings, "baseUrl" | "model">;
 /** The Ollama model Lilith is set up to use, or null when she uses another kind of AI. */
 const ollamaModel = ({ provider }: Config): OllamaModel | null =>
   provider.configured && getPreset(provider.preset).kind === "ollama" && provider.model ? { baseUrl: provider.baseUrl, model: provider.model } : null;
+
+/**
+ * Sentences of a reply that she already said lately. `text` leaves them out when enough is left to
+ * stand on its own (a repeat beats a fragment like "O…"); `mostly` means it's worth asking again.
+ */
+function repeats(text: string, recent: readonly string[]): { text: string; repeated: number; mostly: boolean } {
+  const repeated = repeatedSentences(text, recent);
+  const fresh = withoutSentences(text, repeated);
+  const enough = Array.from(fresh).length >= MIN_FRESH_CHARS;
+  return { text: repeated.length > 0 && enough ? fresh : text, repeated: repeated.length, mostly: repeated.length > 0 && !enough };
+}
+
+/** The turns as the model gets them: the note for this moment goes in front of the latest message. */
+const withNote = (turns: readonly ChatTurn[], context: PromptContext): ChatTurn[] =>
+  turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: withTurnNote(context, turn.content) } : turn));
 
 export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
   mode === "on" || (mode === "auto" && isLocalUrl(settings.baseUrl));

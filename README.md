@@ -21,7 +21,9 @@ answers in her own speech bubble, in character, in your language, and remembers 
   [Piper](https://github.com/rhasspy/piper) and recognized by
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp); the dashboard's **Voice** tab downloads
   only what you turn on (about 100–400 MB) and lets you pick her voice, speed and volume.
-- **Memory.** She follows the conversation and keeps notes about you that you can read, edit and delete.
+- **Memory.** She follows the conversation, sums up its older part as it grows so she keeps the
+  thread of long talks, and keeps notes about you, correcting them when things change. You can read,
+  edit and delete both. Tuned for small AI models on your own PC.
 - **Cards from Lilith.** She leaves handwritten cards in the game's own note inbox, at most one a
   day, about what you've talked about and what you chose to share with her: notes, and pictures you
   pick from your PC in the dashboard's **Cards** tab. She reacts in her bubble when you share
@@ -60,9 +62,10 @@ Settings, API keys, memory and logs stay on your PC in `%APPDATA%\LilithAICompan
 another server on this PC nothing leaves your PC. A LAN server receives the data on your network.
 Voice always runs on your PC: recordings are deleted once they're turned into text, and nothing you
 say is sent anywhere except as that text, the same as a typed message.
-With an online service, your message, the recent conversation, Lilith's persona, her notes about
-you, what you shared for her cards, the time and your player name go to that service. With web
-search on, only the search words she picks go to DuckDuckGo or Firecrawl, never your conversation.
+With an online service, your message, the recent conversation and its summary, Lilith's persona,
+her notes about you, what you shared for her cards, the time and your player name go to that
+service. With web search on, only the search words she picks go to DuckDuckGo or Firecrawl, never
+your conversation.
 To check for updates, the mod asks GitHub for the list of releases every few hours; nothing about
 you is sent.
 

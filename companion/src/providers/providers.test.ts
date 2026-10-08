@@ -5,7 +5,7 @@ import { inflateSync } from "node:zlib";
 import { z } from "zod";
 import { bgraToPng } from "../computer/png.ts";
 import { createProvider } from "./index.ts";
-import { pullOllamaModel, unloadOllama, type PullProgress } from "./ollama.ts";
+import { pullOllamaModel, unloadOllama, warmUpOllama, type PullProgress } from "./ollama.ts";
 import { ProviderError, type ChatResult } from "./types.ts";
 
 type Handler = (request: Request, body: Record<string, unknown>) => Response | Promise<Response>;
@@ -108,6 +108,16 @@ describe("OpenAI-compatible adapter", () => {
     expect(server.bodies.at(-1)).not.toHaveProperty("thinking");
   });
 
+  test("asks for a JSON schema, and asks again without it when the server can't do structured output", async () => {
+    const json = { name: "answer", schema: { type: "object", properties: { add: { type: "array" } }, required: ["add"], additionalProperties: false } };
+    const server = mock((_, body) =>
+      "response_format" in body ? Response.json({ error: { message: "This response_format type is unavailable now" } }, { status: 400 }) : completion('{"add": []}'),
+    );
+    expect((await openai(server.url).chat({ ...request, json })).text).toBe('{"add": []}');
+    expect(server.bodies[0]).toMatchObject({ response_format: { type: "json_schema", json_schema: { ...json, strict: true } } });
+    expect(server.bodies.at(-1)).not.toHaveProperty("response_format");
+  });
+
   test("reports reasoning separately when the answer is empty", async () => {
     const server = mock(() => completion("", { reasoning_content: "pensando..." }));
     const result = await openai(server.url).chat(request);
@@ -146,6 +156,20 @@ describe("Ollama adapter", () => {
     });
     expect((await ollama(server.url).chat(request)).text).toBe("Hola");
     expect(server.bodies[0]).toMatchObject({ think: false, stream: false, options: { num_ctx: 8192 } });
+    expect(server.bodies[0]).not.toHaveProperty("format");
+  });
+
+  test("constrains the answer to a JSON schema while decoding", async () => {
+    const schema = { type: "object", properties: { add: { type: "array" } }, required: ["add"] };
+    const server = mock(() => Response.json({ message: { content: '{"add": []}' }, done_reason: "stop" }));
+    await ollama(server.url).chat({ ...request, json: { name: "answer", schema } });
+    expect(server.bodies[0]).toHaveProperty("format", schema);
+  });
+
+  test("warms the model up with the chat's context size, so the first message doesn't reload it", async () => {
+    const server = mock(() => Response.json({ done: true }));
+    await warmUpOllama(server.url, "qwen3.5:4b");
+    expect(server.bodies[0]).toMatchObject({ model: "qwen3.5:4b", options: { num_ctx: 8192 } });
   });
 
   test("retries without `think` for models that reject it", async () => {

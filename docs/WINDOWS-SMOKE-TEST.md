@@ -50,6 +50,8 @@ Keep two things handy:
 | 39 | With Ollama: start the game, wait a minute and run `ollama ps`; press **F7**, then run it again | Nothing is loaded before the popup opens; right after, Lilith's model is listed |
 | 40 | Close the game, then run `ollama ps` | Her model is no longer listed |
 | 41 | **IA → Avanzado**: set «Liberar memoria después de» to 1; chat in game, wait 2 minutes, run `ollama ps` | Her model is gone while the game stays open; the next **F7** loads it again |
+| 42 | With local AI, chat in game for 15+ messages: say your name and a few things about yourself, and pause 20 s now and then | Replies don't wait on memory upkeep, and she doesn't end reply after reply with the same line. Dashboard → **Lilith**: «Lo que sabe de ti» lists those facts, and «Lo que recuerda de sus conversaciones» sums up the early messages |
+| 43 | **Lilith** → «Resumir ahora», then «Borrar el historial de conversación» | The summary gains lines; clearing empties it and keeps the notes |
 
 ## Things to report back
 

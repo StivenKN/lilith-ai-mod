@@ -21,6 +21,11 @@ export interface ChatRequest {
   temperature: number;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * A JSON schema the answer must follow. Ollama and OpenAI-compatible servers enforce it while
+   * decoding (servers that reject it get the request without it); Claude follows the prompt.
+   */
+  json?: { name: string; schema: Record<string, unknown> };
 }
 
 export interface ChatResult {

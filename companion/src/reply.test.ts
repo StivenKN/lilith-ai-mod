@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isRepeat, paginate, parseReply, textWidth, truncate, wrapLines } from "./reply.ts";
+import { isRepeat, paginate, parseReply, repeatedSentences, splitSentences, textWidth, truncate, withoutSentences, wrapLines } from "./reply.ts";
 
 describe("parseReply", () => {
   test("reads a Spanish emotion tag and keeps Spanish punctuation intact", () => {
@@ -74,5 +74,30 @@ describe("isRepeat", () => {
     const previous = ["¿Sabías que el pastel de fresa es mi favorito?"];
     expect(isRepeat("¿Sabías que el pastel de fresa es mi favorito!", previous)).toBe(true);
     expect(isRepeat("Hoy el cielo se ve tranquilo, ¿no crees?", previous)).toBe(false);
+  });
+});
+
+describe("repeatedSentences", () => {
+  test("catches the closing question a small model tacks onto every reply", () => {
+    const previous = ["Me encanta que lo hiciéramos juntos. ¿Te gustaría que lo hiciéramos juntos?", "Mi animal favorito es el perro. ¿Te gustan los animales?"];
+    const reply = "¡Qué bueno! Los perros son muy leales. ¿Te gustaría que lo hiciéramos juntos?";
+    expect(repeatedSentences(reply, previous)).toEqual(["¿Te gustaría que lo hiciéramos juntos?"]);
+    expect(withoutSentences(reply, ["¿Te gustaría que lo hiciéramos juntos?"])).toBe("¡Qué bueno! Los perros son muy leales.");
+  });
+
+  test("catches a catchphrase that comes back with a word or two changed, but not common openings", () => {
+    const previous = ["¿Quieres que te cuente una historia… o que te acompañe a dormir?", "¿Cómo te fue en el trabajo hoy?"];
+    expect(repeatedSentences("Entiendo. ¿Quieres que te cuente algo… o que te acompañe a dormir?", previous)).toEqual(["¿Quieres que te cuente algo… o que te acompañe a dormir?"]);
+    expect(repeatedSentences("¿Cómo te fue en el examen de inglés?", previous)).toEqual([]);
+  });
+
+  test("catches a sentence said twice in one reply, but lets short interjections come back", () => {
+    expect(repeatedSentences("Me quedo aquí contigo un ratito. Me quedo aquí contigo un ratito más.", [])).toEqual(["Me quedo aquí contigo un ratito más."]);
+    expect(repeatedSentences("¡Qué bueno! Hoy llueve en la ciudad.", ["¡Qué bueno! Me alegra mucho."])).toEqual([]);
+  });
+
+  test("splits after full stops and CJK punctuation, but not after an ellipsis", () => {
+    expect(splitSentences("Hmm... no sé. ¿Quieres? O… ¿qué te gusta más?")).toEqual(["Hmm... no sé.", "¿Quieres?", "O… ¿qué te gusta más?"]);
+    expect(splitSentences("今天下雨了。你还好吗？")).toEqual(["今天下雨了。", "你还好吗？"]);
   });
 });
