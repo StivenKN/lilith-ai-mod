@@ -140,10 +140,7 @@ async function main(): Promise<void> {
   if (mode === "bridge") {
     bridge = startBridge({
       onMessage: (message) => brain.handlePluginMessage(message),
-      onClose: () => {
-        brain.pluginDisconnected();
-        void shutdown(0, "game closed the connection");
-      },
+      onClose: () => void brain.pluginDisconnected().finally(() => shutdown(0, "game closed the connection")),
       log: logger.scope("bridge"),
     });
     return;

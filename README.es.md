@@ -28,7 +28,9 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
   algo, y puedes pedirle una tarjeta cuando quieras.
 - **Habla por iniciativa propia** (opcional) cuando llevan un rato sin hablar, nunca mientras duerme.
 - **La IA que prefieras:** Ollama en tu PC (gratis y privado), OpenAI, Claude, Gemini, DeepSeek,
-  OpenRouter, Groq, Mistral, xAI, LM Studio o cualquier servidor compatible con OpenAI.
+  OpenRouter, Groq, Mistral, xAI, LM Studio o cualquier servidor compatible con OpenAI. Con Ollama,
+  su modelo se carga al abrir el chat y libera la memoria tras 10 minutos sin uso, o en cuanto cierras
+  el juego (cambia la espera en **IA → Avanzado**).
 - **Búsqueda en internet** (opcional). Puede buscar noticias, clima, precios y otros datos
   actuales: gratis desde tu PC (DuckDuckGo, sin cuenta) o con [Firecrawl](https://www.firecrawl.dev)
   y tu clave de API. Actívala en **IA → Búsqueda en internet**.

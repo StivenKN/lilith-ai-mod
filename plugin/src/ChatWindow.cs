@@ -59,6 +59,8 @@ internal sealed class ChatWindow : IDisposable
 
     public ChatWindow(UiStrings strings) => _strings = strings;
 
+    /// <summary>The window just appeared, so the player is about to talk (raised on the window thread).</summary>
+    public event Action? Opened;
     /// <summary>The user sent a message (raised on the window thread).</summary>
     public event Action<string>? Submitted;
     /// <summary>The settings button was pressed (raised on the window thread).</summary>
@@ -467,6 +469,7 @@ internal sealed class ChatWindow : IDisposable
         SetForegroundWindow(_hwnd);
         SetFocus(_edit);
         SendMessageW(_edit, EM_SETSEL, IntPtr.Zero, new IntPtr(-1));
+        Opened?.Invoke();
     }
 
     private void HideAndRestoreFocus()

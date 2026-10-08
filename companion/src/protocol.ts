@@ -8,6 +8,7 @@
 // (as `card` was) doesn't need a version bump; the capability list tells which plugin can show it.
 // Voice: `ready.voiceHotkey` turns the plugin's microphone on; it records to a WAV file and sends
 // `voice{path}` (or `voiceError`). A `say` may carry `audio`, a WAV file the plugin plays with it.
+// `chatOpened` says the popup just appeared, so a local model can load while the player types.
 
 import { z } from "zod";
 
@@ -59,6 +60,8 @@ export const PluginMessage = z.discriminatedUnion("type", [
   }),
   GameState.extend({ type: z.literal("state") }),
   z.object({ type: z.literal("chat"), text: z.string().min(1).max(4000) }),
+  /** The chat popup appeared (hotkey, tray or microphone): the player is about to talk. */
+  z.object({ type: z.literal("chatOpened") }),
   /** A finished microphone recording (16 kHz mono WAV); the companion deletes it once transcribed. */
   z.object({ type: z.literal("voice"), path: z.string().min(1) }),
   /** The microphone couldn't record; `detail` is the technical reason. */

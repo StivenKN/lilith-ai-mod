@@ -10,6 +10,7 @@ namespace LilithAICompanion;
 // Startup order: send `state`, then `hello`; the companion answers `ready`.
 // Voice: `ready.voiceHotkey` turns the microphone on; recordings go out as `voice{path}`, and a
 // `say` may carry `audio`, a WAV file to play with it.
+// `chatOpened` goes out each time the popup appears, so a local model can load while they type.
 
 internal sealed record HotkeySpec(string Key, bool Ctrl, bool Alt, bool Shift)
 {
@@ -67,6 +68,7 @@ internal static class Protocol
         Serialize(new { type = "hello", v = Version, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps });
 
     public static string Chat(string text) => Serialize(new { type = "chat", text });
+    public static string ChatOpened() => Serialize(new { type = "chatOpened" });
     public static string Action(string name) => Serialize(new { type = "action", name });
     public static string Result(string id, bool ok, string? error) => Serialize(new { type = "result", id, ok, error });
     public static string Log(string level, string msg) => Serialize(new { type = "log", level, msg });

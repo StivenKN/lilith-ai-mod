@@ -47,6 +47,9 @@ Keep two things handy:
 | 36 | Voz: turn on «Hablarle a Lilith con tu micrófono», download; in game press **F8**, say "Hola Lilith, ¿cómo estás?", press **F8** again | The popup opens saying it's listening, with the mic button lit; then "Dijiste: «…»" and her reply. Her voice stops if you press F8 while she's talking |
 | 37 | Windows Settings → Privacy → Microphone: deny desktop apps, then press **F8** | A clear Spanish error about the microphone, in the popup and the bubble |
 | 38 | Press **F8** and stay silent for 30 s | Recording stops on its own; "No te entendí…" in the popup, nothing in the bubble |
+| 39 | With Ollama: start the game, wait a minute and run `ollama ps`; press **F7**, then run it again | Nothing is loaded before the popup opens; right after, Lilith's model is listed |
+| 40 | Close the game, then run `ollama ps` | Her model is no longer listed |
+| 41 | **IA → Avanzado**: set «Liberar memoria después de» to 1; chat in game, wait 2 minutes, run `ollama ps` | Her model is gone while the game stays open; the next **F7** loads it again |
 
 ## Things to report back
 

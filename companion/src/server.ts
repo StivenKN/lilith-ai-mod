@@ -71,6 +71,7 @@ export function createProcedures(ctx: AppContext) {
     baseUrl: input.baseUrl,
     model: input.model,
     apiKey: input.apiKey?.trim() || apiKeyFor(ctx.config.current, input.preset),
+    unloadAfterMinutes: ctx.config.current.advanced.unloadAfterMinutes,
   });
 
   return {

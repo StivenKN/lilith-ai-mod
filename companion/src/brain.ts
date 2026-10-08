@@ -3,9 +3,12 @@
 // reach the player (in the bubble and the chat window) instead of a stock in-character line.
 // Also writes the cards she leaves in the game's inbox, from what the player chose to share.
 // With voice on, each bubble page is spoken too, and microphone recordings become chat turns.
+// An Ollama model is in memory only while it's needed: it loads when the player opens the chat,
+// Ollama frees it after the idle time in the settings, and it's freed at once when the game
+// closes or another model is chosen.
 
 import { rm } from "node:fs/promises";
-import type { ConfigStore } from "./config.ts";
+import type { Config, ConfigStore } from "./config.ts";
 import { apiKeyFor, type Hotkey } from "./config.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
@@ -31,7 +34,7 @@ import {
 } from "./prompt.ts";
 import { createProvider, isLocalProvider, ProviderError, type ErrorKind, type Provider } from "./providers/index.ts";
 import type { ProviderSettings } from "./providers/index.ts";
-import { isOllamaModelLoaded, warmUpOllama } from "./providers/ollama.ts";
+import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/ollama.ts";
 import { getPreset, isLocalUrl } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { isRepeat, paginate, parseReply } from "./reply.ts";
@@ -88,6 +91,8 @@ export class Brain {
   #pagingToken = 0;
   #lastActivity = Date.now();
   #warm = new Set<string>();
+  /** The Ollama model being loaded ahead of a message (its warmKey), until it's ready. */
+  #loading: string | null = null;
   #openedSetup = false;
   #speakFirstTimer: ReturnType<typeof setInterval> | null = null;
   #nextAutoCardAt = 0;
@@ -108,12 +113,16 @@ export class Brain {
     this.#log = options.logger.scope("brain");
     this.#desktopReady = options.desktop ? Promise.resolve(options.desktop) : getDesktop();
     void this.#desktopReady.then((status) => { this.#desktop = status; this.#emit({ type: "plugin" }); });
-    options.config.onChange(() => {
+    let model = ollamaModel(options.config.current);
+    options.config.onChange((config) => {
       this.#computerEpoch++;
       if (this.#computerActed) this.#computerAbort?.abort();
       this.#computerCapabilities = undefined;
       if (this.#connected) this.#sendReady();
       this.#registerSecrets();
+      const previous = model;
+      model = ollamaModel(config);
+      if (previous && warmKey(previous) !== (model && warmKey(model))) void this.#unloadModel(previous, "another model was chosen");
     });
     this.#registerSecrets();
   }
@@ -159,6 +168,9 @@ export class Brain {
       case "chat":
         void this.chat(message.text, "game");
         return;
+      case "chatOpened":
+        this.#loadModel();
+        return;
       case "voice":
         void this.voiceChat(message.path, "game");
         return;
@@ -184,10 +196,13 @@ export class Brain {
     }
   }
 
-  pluginDisconnected(): void {
+  /** The game closed: stop any computer task and free the local model, which nothing needs until it's back. */
+  async pluginDisconnected(): Promise<void> {
     this.#cancelComputer();
     this.#connected = false;
     this.#emit({ type: "plugin" });
+    const model = ollamaModel(this.options.config.current);
+    if (model) await this.#unloadModel(model, "the game closed");
   }
 
   #onHello(hello: HelloMessage): void {
@@ -212,17 +227,10 @@ export class Brain {
     this.#emit({ type: "plugin" });
     if (newConnection) this.#deliverPendingCards();
 
-    const { provider } = this.options.config.current;
-    if (!provider.configured && !this.#openedSetup) {
+    if (!this.options.config.current.provider.configured && !this.#openedSetup) {
       this.#openedSetup = true;
       this.#log.info("no AI provider configured yet; opening the setup page");
       this.options.openDashboard();
-    } else if (provider.preset === "ollama" && provider.model) {
-      this.#log.info(`warming up Ollama model ${provider.model}`);
-      warmUpOllama(provider.baseUrl, provider.model).then(
-        () => this.#log.info(`Ollama model ${provider.model} is loaded`),
-        (error: unknown) => this.#log.warn(`could not warm up Ollama: ${errorMessage(error)}`),
-      );
     }
   }
 
@@ -622,22 +630,56 @@ export class Brain {
     const override = this.options.config.current.advanced.timeoutSeconds;
     if (override) return override * 1000;
     if (!isLocalProvider(settings)) return 60_000;
-    const warm =
-      getPreset(settings.preset).kind === "ollama"
-        ? await isOllamaModelLoaded(settings.baseUrl, settings.model)
-        : this.#warm.has(warmKey(settings));
-    return warm ? 60_000 : 180_000;
+    return (await this.#isWarm(settings)) ? 60_000 : 180_000;
+  }
+
+  /**
+   * Whether a local model can answer without loading first. Ollama says what it holds in memory,
+   * but it lists a model while it's still loading too, so one we're loading counts as cold until
+   * it's ready. Other local servers count as warm after their first reply.
+   */
+  async #isWarm(settings: ProviderSettings): Promise<boolean> {
+    if (getPreset(settings.preset).kind !== "ollama") return this.#warm.has(warmKey(settings));
+    return this.#loading !== warmKey(settings) && (await isOllamaModelLoaded(settings.baseUrl, settings.model));
   }
 
   /** Keeps the player informed during slow replies (e.g. a local model loading). */
   #escalateWhileWaiting(settings: ProviderSettings, tr: Translate, started: number, visible: boolean) {
-    const local = isLocalProvider(settings);
+    let loading = false;
+    if (visible && isLocalProvider(settings)) void this.#isWarm(settings).then((warm) => { loading = !warm; });
     return setInterval(() => {
       if (!visible) return;
       const seconds = Math.round((performance.now() - started) / 1000);
-      const text = local && !this.#warm.has(warmKey(settings)) ? tr("status.loadingModel") : tr("status.stillThinking", { seconds });
+      const text = loading ? tr("status.loadingModel") : tr("status.stillThinking", { seconds });
       this.options.send({ type: "chatStatus", kind: "thinking", text });
     }, 8_000);
+  }
+
+  /**
+   * The player opened the chat: load the Ollama model now, so it's ready by the time they send.
+   * If it's already in memory, this restarts its idle countdown instead.
+   */
+  #loadModel(): void {
+    const config = this.options.config.current;
+    const model = ollamaModel(config);
+    if (!model) return;
+    const key = warmKey(model);
+    if (this.#loading === key) return;
+    const started = performance.now();
+    this.#loading = key;
+    void warmUpOllama(model.baseUrl, model.model, config.advanced.unloadAfterMinutes)
+      .then(
+        () => this.#log.info(`Ollama model ${model.model} ready after ${Math.round(performance.now() - started)} ms`),
+        (error: unknown) => this.#log.warn(`could not load Ollama model ${model.model}: ${errorMessage(error)}`),
+      )
+      .finally(() => {
+        if (this.#loading === key) this.#loading = null;
+      });
+  }
+
+  /** Frees an Ollama model's memory now, instead of when its idle time runs out. */
+  async #unloadModel(model: OllamaModel, reason: string): Promise<void> {
+    if (await unloadOllama(model.baseUrl, model.model)) this.#log.info(`unloaded Ollama model ${model.model}: ${reason}`);
   }
 
   async #showPages(text: string, emotion: Emotion, ambient: boolean): Promise<void> {
@@ -867,8 +909,9 @@ export class Brain {
   }
 
   #providerSettings(): ProviderSettings {
-    const { provider } = this.options.config.current;
-    return { preset: provider.preset, baseUrl: provider.baseUrl, model: provider.model, apiKey: apiKeyFor(this.options.config.current) };
+    const config = this.options.config.current;
+    const { provider } = config;
+    return { preset: provider.preset, baseUrl: provider.baseUrl, model: provider.model, apiKey: apiKeyFor(config), unloadAfterMinutes: config.advanced.unloadAfterMinutes };
   }
 
   #describe(error: unknown, settings: ProviderSettings): TurnFailure {
@@ -914,7 +957,12 @@ export class Brain {
   }
 }
 
-const warmKey = (settings: ProviderSettings) => `${settings.baseUrl}|${settings.model}`;
+const warmKey = (settings: Pick<ProviderSettings, "baseUrl" | "model">) => `${settings.baseUrl}|${settings.model}`;
+
+type OllamaModel = Pick<ProviderSettings, "baseUrl" | "model">;
+/** The Ollama model Lilith is set up to use, or null when she uses another kind of AI. */
+const ollamaModel = ({ provider }: Config): OllamaModel | null =>
+  provider.configured && getPreset(provider.preset).kind === "ollama" && provider.model ? { baseUrl: provider.baseUrl, model: provider.model } : null;
 
 export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
   mode === "on" || (mode === "auto" && isLocalUrl(settings.baseUrl));
