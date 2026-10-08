@@ -1130,3 +1130,21 @@ label.button[aria-disabled="true"] {
   box-shadow: 0 1px 3px #00000022;
   rotate: -0.4deg;
 }
+
+/* ── Voice ─────────────────────────────────────────────── */
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--ribbon);
+}
+/* A microphone button while it listens, pulsing like the hotkey recorder. */
+button.secondary.recording {
+  background: var(--sakura);
+  border-color: var(--ribbon);
+  box-shadow: 0 3px 0 var(--ribbon);
+  animation: listening 1.2s ease-in-out infinite;
+}
+.composer button.secondary {
+  height: 44px;
+  flex: none;
+}

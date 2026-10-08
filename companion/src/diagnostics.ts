@@ -7,7 +7,7 @@ import type { Brain } from "./brain.ts";
 import { publicConfig, type Config } from "./config.ts";
 import { formatEntry, type Logger } from "./log.ts";
 import { resolveLanguage } from "./languages.ts";
-import { capabilityNames } from "./protocol.ts";
+import { CAP_OFF, capabilityNames } from "./protocol.ts";
 import type { UpdateStatus } from "./updater.ts";
 
 export async function buildReport(input: {
@@ -18,6 +18,7 @@ export async function buildReport(input: {
   logger: Logger;
   update: UpdateStatus;
   gameDir: string | null;
+  voiceInstalled: Record<string, boolean>;
 }): Promise<string> {
   const { brain, config, logger } = input;
   const snapshot = brain.snapshot();
@@ -36,11 +37,18 @@ export async function buildReport(input: {
     snapshot.lastTurn ? `- Last reply: ${snapshot.lastTurn.at}, ${snapshot.lastTurn.latencyMs} ms, ${snapshot.lastTurn.model}` : "- Last reply: none yet",
     `- Update: ${input.update.state}${"version" in input.update ? ` ${input.update.version}` : ""}${input.update.state === "failed" ? ` (${input.update.detail})` : ""}`,
     snapshot.lastError ? `- Last error: ${snapshot.lastError.at} · ${snapshot.lastError.kind} · ${snapshot.lastError.detail}` : "- Last error: none",
+    `- Voice: speak ${config.voice.speak ? `on (${snapshot.spokenLanguage ?? "no voice for this language"})` : "off"}, listen ${config.voice.listen ? `on (${config.voice.sttModel})` : "off"}; installed: ${
+      Object.entries(input.voiceInstalled)
+        .filter(([, installed]) => installed)
+        .map(([id]) => id)
+        .join(", ") || "nothing"
+    }`,
+    snapshot.lastVoiceError ? `- Last voice error: ${snapshot.lastVoiceError.at} · ${snapshot.lastVoiceError.detail}` : "- Last voice error: none",
     "",
     "### Game capabilities",
     "",
     ...(hello
-      ? capabilityNames.map((name) => `- ${hello.caps[name] === "ok" ? "✅" : "❌"} ${name}${hello.caps[name] && hello.caps[name] !== "ok" ? `: ${hello.caps[name]}` : ""}`)
+      ? capabilityNames.map((name) => `- ${hello.caps[name] === "ok" ? "✅" : hello.caps[name] === CAP_OFF ? "⏸️" : "❌"} ${name}${hello.caps[name] && hello.caps[name] !== "ok" ? `: ${hello.caps[name]}` : ""}`)
       : ["- (no plugin connection)"]),
     "",
     "### Settings (keys masked)",

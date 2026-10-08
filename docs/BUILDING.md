@@ -31,6 +31,15 @@ bun scripts/sim.ts es-419              # act as the game plugin: type to chat, /
 
 Set `LILITH_AI_DATA_DIR` to a temporary folder to keep test settings away from your real ones.
 
+Voice: the Voice tab downloads the engines on Windows only. Elsewhere, point the companion at
+engines you installed yourself, then download voices and models from the tab as usual:
+
+```sh
+export LILITH_AI_PIPER=/path/to/piper            # e.g. `pip install piper-tts` in a venv
+export LILITH_AI_WHISPER=/path/to/whisper-cli    # built from whisper.cpp
+bun scripts/sim.ts es-419                        # then /voice some-recording.wav
+```
+
 ## Plugin
 
 You need the .NET 8 SDK.

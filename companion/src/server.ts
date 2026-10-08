@@ -3,6 +3,9 @@
 // API keys: Host header check (DNS rebinding), per-run session token in a SameSite=Strict
 // cookie, JSON-only POSTs, and keys never returned in full.
 
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import dashboard from "../web/index.html";
 import type { Brain } from "./brain.ts";
@@ -20,6 +23,9 @@ import { listOllamaModels, ollamaVersion, pullOllamaModel } from "./providers/ol
 import { presetIds } from "./providers/presets.ts";
 import { createSearcher, searchModes } from "./search.ts";
 import type { Updater } from "./updater.ts";
+import { translator } from "./i18n.ts";
+import { isComponentId, voiceIds, voices } from "./voice/catalog.ts";
+import { sampleLine, VoiceError, type Voice } from "./voice/index.ts";
 
 export const APP_NAME = "lilith-ai-companion";
 const PORTS = Array.from({ length: 20 }, (_, i) => 47321 + i);
@@ -34,6 +40,7 @@ export interface AppContext {
   logger: Logger;
   brain: Brain;
   updater: Updater;
+  voice: Voice;
   paths: DataPaths;
   payloadDir: string;
   /** The running exe, copied into the game on install (null when running from source). */
@@ -130,6 +137,27 @@ export function createProcedures(ctx: AppContext) {
 
     chat: procedure(z.object({ text: z.string().min(1).max(4000) }), async ({ text }) => ctx.brain.chat(text, "dashboard")),
 
+    voiceStatus: procedure(none, async () => ({
+      ...(await ctx.voice.status()),
+      spokenLanguage: ctx.brain.spokenLanguage(),
+      lastVoiceError: ctx.brain.lastVoiceError,
+    })),
+
+    /** Speaks `text` (or a sample line) with `voice` (or the one for her current language), for the browser to play. */
+    speak: procedure(z.object({ text: z.string().min(1).max(2000).optional(), voice: z.enum(voiceIds).optional() }), async (input) => {
+      const settings = ctx.config.current.voice;
+      const language = input.voice ? voices[input.voice].language : ctx.brain.spokenLanguage();
+      if (!language) return { ok: false as const, detail: "no voice for the current reply language" };
+      const voice = input.voice ?? (language === "es" ? settings.esVoice : settings.enVoice);
+      try {
+        const spoken = await ctx.voice.speak(input.text ?? sampleLine[language], { voice, speed: settings.speed, volume: settings.volume });
+        return { ok: true as const, url: `/api/voice/audio/${spoken.name}`, seconds: spoken.seconds };
+      } catch (error) {
+        log.warn(`could not speak in the dashboard: ${errorMessage(error)}`);
+        return { ok: false as const, detail: errorMessage(error) };
+      }
+    }),
+
     history: procedure(none, async () => ctx.memory.history),
 
     clearHistory: procedure(none, async () => {
@@ -187,6 +215,7 @@ export function createProcedures(ctx: AppContext) {
         logger: ctx.logger,
         update: ctx.updater.status,
         gameDir: null,
+        voiceInstalled: (await ctx.voice.status()).installed,
       }),
     })),
 
@@ -229,6 +258,8 @@ export function createProcedures(ctx: AppContext) {
 }
 
 export type Procedures = ReturnType<typeof createProcedures>;
+/** Answer of POST /api/voice/transcribe. */
+export type TranscribeResult = { ok: true; text: string } | { ok: false; message: string; detail?: string };
 export type Api = {
   [K in keyof Procedures]: {
     input: z.input<Procedures[K]["input"]>;
@@ -248,6 +279,7 @@ export function startServer(ctx: AppContext): DashboardServer {
   const procedures = createProcedures(ctx);
   const log = ctx.logger.scope("server");
   let allowedHosts = new Set<string>();
+  let voiceInstall: Promise<void> | null = null;
 
   const hostOk = (request: Request) => allowedHosts.has(request.headers.get("host") ?? "");
   const authed = (request: Request) =>
@@ -324,6 +356,61 @@ export function startServer(ctx: AppContext): DashboardServer {
         cancel: () => cleanup(),
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
+    },
+    "/api/voice/install": {
+      POST: async (request: Request) => {
+        if (!authed(request)) return deny(request);
+        const body = z.object({ ids: z.array(z.string().refine(isComponentId)).min(1) }).safeParse(await request.json().catch(() => null));
+        if (!body.success) return Response.json({ error: "ids must be voice components" }, { status: 400 });
+        if (voiceInstall) return Response.json({ error: "another download is running" }, { status: 409 });
+        const ids = body.data.ids.filter(isComponentId);
+        const stream = new ReadableStream<string>({
+          async start(controller) {
+            const write = (data: unknown) => controller.enqueue(`${JSON.stringify(data)}\n`);
+            voiceInstall = ctx.voice.install(ids, write, request.signal);
+            try {
+              await voiceInstall;
+              write({ status: "done" });
+            } catch (error) {
+              log.error(`voice download failed: ${errorMessage(error)}`);
+              write({ error: errorMessage(error) });
+            } finally {
+              voiceInstall = null;
+            }
+            controller.close();
+          },
+        });
+        return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
+      },
+    },
+    /** A WAV recorded by the dashboard's microphone button → the text she heard (not sent as chat). */
+    "/api/voice/transcribe": {
+      POST: async (request: Request) => {
+        if (!authed(request)) return deny(request);
+        if (request.headers.get("content-type") !== "audio/wav") return new Response("audio/wav only", { status: 415 });
+        const audio = new Uint8Array(await request.arrayBuffer());
+        if (audio.length > 16 * 1024 * 1024) return new Response("Recording too long", { status: 413 });
+        const file = join(tmpdir(), `lilith-dashboard-${crypto.randomUUID()}.wav`);
+        await writeFile(file, audio);
+        const tr = translator(ctx.brain.uiLocale());
+        try {
+          const text = await ctx.voice.transcribe(file, { model: ctx.config.current.voice.sttModel, language: ctx.brain.replyLanguage() });
+          return Response.json({ ok: true, text } satisfies TranscribeResult);
+        } catch (error) {
+          const kind = error instanceof VoiceError ? error.kind : "failed";
+          log.warn(`dashboard speech recognition failed (${kind}): ${errorMessage(error)}`);
+          return Response.json({ ok: false, message: tr(`voice.error.${kind}`), detail: errorMessage(error) } satisfies TranscribeResult);
+        } finally {
+          await rm(file, { force: true });
+        }
+      },
+    },
+    "/api/voice/audio/:name": async (request: Request & { params: { name: string } }) => {
+      if (!authed(request)) return deny(request);
+      const path = ctx.voice.cachedAudio(request.params.name);
+      // Cached files are swept after a few minutes, so a missing one is ordinary.
+      if (!path || !(await Bun.file(path).exists())) return new Response("Not found", { status: 404 });
+      return new Response(Bun.file(path), { headers: { "content-type": "audio/wav", "cache-control": "no-store" } });
     },
     "/api/ollama/pull": {
       POST: async (request: Request) => {

@@ -42,10 +42,17 @@ Keep two things handy:
 | 31 | Chat casually with small local tool models in Automatic mode, including a follow-up while a reply is pending | Ordinary conversation completes without tools, focus handoff or desktop actions. |
 | 32 | Dashboard → **Cards**: share a note, then add a phone photo | She reacts in the bubble each time; the photo shows "She saw: …" (with a model that can see) |
 | 33 | **Cards** → Ask for a card now | The tray's note badge lights up; the inbox shows the card on the game's note paper, accents intact. The dashboard marks it "in the game's inbox" |
+| 34 | Dashboard → Voz: turn on «Lilith dice sus respuestas en voz alta», download, press «Escucharla» | The download shows progress and finishes; the browser plays her Spanish voice |
+| 35 | Chat in game with the voice on | Each bubble page is spoken, and stays up until she finishes saying it; the game's own music and sounds keep playing |
+| 36 | Voz: turn on «Hablarle a Lilith con tu micrófono», download; in game press **F8**, say "Hola Lilith, ¿cómo estás?", press **F8** again | The popup opens saying it's listening, with the mic button lit; then "Dijiste: «…»" and her reply. Her voice stops if you press F8 while she's talking |
+| 37 | Windows Settings → Privacy → Microphone: deny desktop apps, then press **F8** | A clear Spanish error about the microphone, in the popup and the bubble |
+| 38 | Press **F8** and stay silent for 30 s | Recording stops on its own; "No te entendí…" in the popup, nothing in the bubble |
 
 ## Things to report back
 
 These help tune the defaults:
+- How long speech recognition takes with "Preciso" vs "Rápido" on that PC, and whether F8 recordings
+  sound clean (`%TEMP%\LilithAICompanion` holds a recording only until it's transcribed).
 - Any ✗ capability, with its reason.
 - Whether the expression changed with emotion `happy` vs `neutral`. If not, try leaving emotion empty.
   The relevant code is `ForceSay` in `plugin/src/GameApi.cs`.

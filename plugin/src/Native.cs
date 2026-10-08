@@ -1,9 +1,10 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace LilithAICompanion;
 
-/// <summary>Win32 declarations used by the bridge (job object) and the chat window.</summary>
+/// <summary>Win32 declarations used by the bridge (job object), the chat window and audio.</summary>
 internal static class Native
 {
     // ── Job object: the companion dies with the game, even if the game crashes ──
@@ -392,6 +393,29 @@ internal static class Native
 
     [DllImport("gdi32.dll")]
     internal static extern bool StretchBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, int sourceWidth, int sourceHeight, uint rop);
+
+    [DllImport("user32.dll")]
+    internal static extern bool InvalidateRect(IntPtr hwnd, IntPtr rect, bool erase);
+
+    // ── Audio: the microphone (MCI) and Lilith's voice (PlaySound) ──
+
+    internal const uint WM_TIMER = 0x0113;
+    internal const uint SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002, SND_FILENAME = 0x00020000;
+
+    [DllImport("user32.dll")]
+    internal static extern UIntPtr SetTimer(IntPtr hwnd, UIntPtr id, uint milliseconds, IntPtr callback);
+
+    [DllImport("user32.dll")]
+    internal static extern bool KillTimer(IntPtr hwnd, UIntPtr id);
+
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+    internal static extern int mciSendStringW(string command, StringBuilder? returnText, int returnLength, IntPtr callback);
+
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool mciGetErrorStringW(int error, StringBuilder text, int length);
+
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool PlaySoundW(string? sound, IntPtr module, uint flags);
 
     /// <summary>A GDI COLORREF from a familiar 0xRRGGBB hex value.</summary>
     internal static uint Rgb(int hex) => (uint)(((hex & 0xFF) << 16) | (hex & 0xFF00) | ((hex >> 16) & 0xFF));

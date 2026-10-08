@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { call, useRpc, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
+import { play, transcribe, useMicrophone } from "../microphone.ts";
 import { Bubble, Note, ThinkingBubble, useLocale, useTr } from "../ui.tsx";
 
-type Failure = Extract<Output<"chat">, { ok: false }>["error"];
+type Failure = Pick<Extract<Output<"chat">, { ok: false }>["error"], "message" | "detail">;
 
 export function ChatPage(props: { overview: Overview; tick: number }) {
   const tr = useTr();
@@ -13,6 +14,9 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
   const [pending, setPending] = useState<string | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
   const end = useRef<HTMLDivElement>(null);
+  const microphone = useMicrophone();
+  const [transcribing, setTranscribing] = useState(false);
+  const { voice } = props.overview.config;
 
   // Messages sent from the game show up here too.
   useEffect(() => {
@@ -23,8 +27,7 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
     void end.current?.scrollIntoView({ block: "end" });
   }, [history.data, pending]);
 
-  const send = async () => {
-    const text = draft.trim();
+  const send = async (text = draft.trim()) => {
     if (!text || pending) return;
     setDraft("");
     setPending(text);
@@ -36,6 +39,31 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
     }
     await history.reload();
     setPending(null);
+    // With the game open she speaks there; otherwise she speaks here.
+    if (result.ok && voice.speak && !props.overview.brain.connected) {
+      const spoken = await call("speak", { text: result.text });
+      if (spoken.ok) await play(spoken.url);
+    }
+  };
+
+  /** First press records, second press (or the time limit) recognizes and sends what was heard. */
+  const toggleMicrophone = async () => {
+    if (microphone.recording) return sendRecording();
+    setFailure(null);
+    try {
+      await microphone.start(() => void sendRecording());
+    } catch (error) {
+      setFailure({ message: tr("voice.micDenied", { detail: error instanceof Error ? error.message : String(error) }), detail: "" });
+    }
+  };
+  const sendRecording = async () => {
+    const wav = await microphone.stop();
+    if (!wav) return;
+    setTranscribing(true);
+    const heard = await transcribe(wav);
+    setTranscribing(false);
+    if (heard.ok) await send(heard.text);
+    else setFailure({ message: heard.message, detail: heard.detail ?? "" });
   };
 
   const time = (iso: string) => new Date(iso).toLocaleTimeString(locale === "es" ? "es-419" : "en", { hour: "2-digit", minute: "2-digit" });
@@ -86,6 +114,15 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
               }
             }}
           />
+          {voice.listen && (
+            <button
+              className={microphone.recording ? "secondary recording" : "secondary"}
+              disabled={pending !== null || transcribing}
+              onClick={() => void toggleMicrophone()}
+            >
+              {transcribing ? tr("chat.transcribing") : microphone.recording ? tr("chat.stopRecording") : tr("chat.record")}
+            </button>
+          )}
           <button className="primary" disabled={!draft.trim() || pending !== null} onClick={() => void send()}>
             {tr("plugin.send")}
           </button>

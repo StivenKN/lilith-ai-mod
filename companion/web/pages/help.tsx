@@ -4,7 +4,7 @@ import { call, useRpc, useServerEvents } from "../api.ts";
 import type { Overview } from "../app.tsx";
 import { Note, useTr } from "../ui.tsx";
 
-const problems = ["noMod", "f7", "slow", "errors", "antivirus", "wrongLanguage"] as const;
+const problems = ["noMod", "f7", "slow", "errors", "antivirus", "wrongLanguage", "voice"] as const;
 
 export function HelpPage(props: { overview: Overview }) {
   const tr = useTr();
