@@ -6,6 +6,7 @@ import esPersona from "../persona/es.md" with { type: "text" };
 import enPersona from "../persona/en.md" with { type: "text" };
 import { languages, type Language } from "./languages.ts";
 import type { GameState } from "./protocol.ts";
+import type { SearchResult } from "./search.ts";
 
 export const defaultPersona = (language: Language): string => (language === "es" ? esPersona : enPersona).trim();
 
@@ -17,7 +18,14 @@ export interface PromptContext {
   state: GameState | null;
   notes: readonly string[];
   maxChars: number;
+  /** "available": she may ask for a search; otherwise what a search she asked for returned. */
+  search?: SearchContext;
 }
+
+export type SearchContext =
+  | { kind: "available" }
+  | { kind: "results"; query: string; results: readonly SearchResult[] }
+  | { kind: "failed"; query: string };
 
 const localeTag = (language: Language): string => (language === "es" ? "es-419" : language);
 
@@ -77,6 +85,11 @@ export function buildSystemPrompt(context: PromptContext): string {
       "- Empieza con una etiqueta de emoción: [neutral], [feliz], [triste], [enojada], [sorprendida] o [timida].",
       "- No escribas tu nombre antes de la respuesta.",
     );
+    if (context.search?.kind === "available") {
+      lines.push(
+        "- Puedes buscar en internet. Si necesitas información actual o que no sabes con certeza (noticias, clima, precios, resultados, fechas de estreno, datos concretos), responde solo con [buscar: consulta breve] y nada más. Recibirás los resultados y luego responderás. No busques para charla normal.",
+      );
+    }
   } else {
     lines.push(
       "Reply format (mandatory):",
@@ -86,8 +99,35 @@ export function buildSystemPrompt(context: PromptContext): string {
       "- Start with an emotion tag: [neutral], [happy], [sad], [angry], [surprised] or [shy].",
       "- Don't write your name before the reply.",
     );
+    if (context.search?.kind === "available") {
+      lines.push(
+        "- You can search the internet. If you need current information or something you don't know for sure (news, weather, prices, scores, release dates, specific facts), reply only with [search: short query] and nothing else. You will get the results, then you reply. Don't search for normal small talk.",
+      );
+    }
   }
+  if (context.search && context.search.kind !== "available") lines.push("", describeSearch(context.search, es));
   return lines.join("\n");
+}
+
+function describeSearch(search: Exclude<SearchContext, { kind: "available" }>, es: boolean): string {
+  if (search.kind === "failed" || search.results.length === 0) {
+    return es
+      ? `Buscaste en internet "${search.query}" pero no obtuviste resultados. Dilo con naturalidad y responde con lo que sabes, sin inventar datos.`
+      : `You searched the internet for "${search.query}" but got no results. Say so naturally and answer with what you know, without making up facts.`;
+  }
+  const header = es
+    ? `Resultados de tu búsqueda en internet "${search.query}". Úsalos para responder con tus palabras y en tu formato; no leas direcciones web ni digas que eres un buscador:`
+    : `Results of your internet search for "${search.query}". Use them to answer in your own words and format; don't read out web addresses or act like a search engine:`;
+  const items = search.results.map((result, index) => {
+    let host = result.url;
+    try {
+      host = new URL(result.url).hostname.replace(/^www\./, "");
+    } catch {
+      // keep the raw URL
+    }
+    return `${index + 1}. ${result.title} (${host}): ${result.snippet.slice(0, 400)}`;
+  });
+  return [header, ...items].join("\n");
 }
 
 /** Stand-in user turn when Lilith speaks first (providers need the last turn to be the user's). */

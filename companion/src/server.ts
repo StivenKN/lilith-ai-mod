@@ -17,6 +17,7 @@ import { defaultPersona } from "./prompt.ts";
 import { createProvider, ProviderError } from "./providers/index.ts";
 import { listOllamaModels, ollamaVersion, pullOllamaModel } from "./providers/ollama.ts";
 import { presetIds } from "./providers/presets.ts";
+import { createSearcher, searchModes } from "./search.ts";
 import type { Updater } from "./updater.ts";
 
 export const APP_NAME = "lilith-ai-companion";
@@ -88,6 +89,29 @@ export function createProcedures(ctx: AppContext) {
     }),
 
     testProvider: procedure(ProviderInput, async (input) => ctx.brain.testProvider(providerSettings(input))),
+
+    /** Runs one search with the given (possibly unsaved) settings, so the player can check them. */
+    testSearch: procedure(
+      z.object({
+        mode: z.enum(searchModes).exclude(["off"]),
+        query: z.string().trim().min(1).max(200),
+        /** Omitted or empty: use the saved key. */
+        apiKey: z.string().optional(),
+      }),
+      async ({ mode, query, apiKey }) => {
+        const started = performance.now();
+        try {
+          const search = createSearcher({ mode, apiKey: apiKey?.trim() || ctx.config.current.search.apiKey });
+          if (!search) return { ok: false as const, detail: "No Firecrawl API key set" };
+          const results = await search(query);
+          return { ok: true as const, results, latencyMs: Math.round(performance.now() - started) };
+        } catch (error) {
+          const detail = ctx.logger.redact(errorMessage(error));
+          log.warn(`test search (${mode}) failed: ${detail}`);
+          return { ok: false as const, detail };
+        }
+      },
+    ),
 
     ollamaStatus: procedure(z.object({ baseUrl: z.string() }), async ({ baseUrl }) => {
       const version = await ollamaVersion(baseUrl);

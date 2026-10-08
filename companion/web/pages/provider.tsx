@@ -4,6 +4,7 @@ import type { ModelInfo } from "../../src/providers/types.ts";
 import { call, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
 import { Bubble, Field, Note, useTr } from "../ui.tsx";
+import { SearchSettings } from "./search.tsx";
 
 const cloudPresets = ["openai", "anthropic", "gemini", "deepseek", "openrouter", "groq", "mistral", "xai"] as const satisfies PresetId[];
 const otherLocalPresets = ["lmstudio", "custom"] as const satisfies PresetId[];
@@ -318,7 +319,7 @@ function OllamaStatus(props: { baseUrl: string; status: Output<"ollamaStatus"> |
   );
 }
 
-/** The AI tab: provider form plus the advanced knobs. */
+/** The AI tab: provider form, web search, and the advanced knobs. */
 export function ProviderPage(props: { overview: Overview; refresh: () => void }) {
   const tr = useTr();
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -339,6 +340,7 @@ export function ProviderPage(props: { overview: Overview; refresh: () => void })
           <p>{tr("provider.saved")}</p>
         </Note>
       )}
+      <SearchSettings overview={props.overview} refresh={props.refresh} />
       <AdvancedSettings overview={props.overview} refresh={props.refresh} />
     </>
   );

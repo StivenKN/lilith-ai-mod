@@ -2,6 +2,7 @@
 // and the Ollama API (/api/...), answering in character in Spanish or English.
 //   bun scripts/mock-llm.ts [port]        (default 11555)
 // Then pick "Custom" with http://127.0.0.1:11555/v1, or Ollama with http://127.0.0.1:11555.
+// With web search on, messages that start with "?" make it ask for a search, then quote the top result.
 
 const port = Number(process.argv[2] ?? 11555);
 const installed = new Set(["qwen3.5:4b"]);
@@ -20,7 +21,11 @@ const replies = {
 };
 let turn = 0;
 
-const reply = (system: string) => {
+const reply = (system: string, user: string) => {
+  const searchAllowed = /\[(search|buscar): /.test(system);
+  const topResult = /^1\. (.+)$/m.exec(system)?.[1];
+  if (topResult) return `[happy] I looked it up: ${topResult.slice(0, 160)}`;
+  if (searchAllowed && user.startsWith("?")) return `[search: ${user.slice(1).trim()}]`;
   const list = /español/i.test(system) ? replies.es : replies.en;
   return list[turn++ % list.length]!;
 };
@@ -32,6 +37,7 @@ const server = Bun.serve({
     const body = request.method === "POST" ? ((await request.json().catch(() => ({}))) as Record<string, unknown>) : {};
     const messages = (body.messages as Array<{ role: string; content: string }> | undefined) ?? [];
     const system = messages.find((message) => message.role === "system")?.content ?? "";
+    const user = messages.findLast((message) => message.role === "user")?.content ?? "";
     await Bun.sleep(600);
 
     switch (url.pathname) {
@@ -39,7 +45,7 @@ const server = Bun.serve({
         return Response.json({ data: [{ id: "mock-lilith" }, { id: "mock-lilith-large" }] });
       case "/v1/chat/completions":
         if (body.model === "broken") return Response.json({ error: { message: "The model `broken` does not exist" } }, { status: 404 });
-        return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: reply(system) } }] });
+        return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: reply(system, user) } }] });
       case "/api/version":
         return Response.json({ version: "0.33.1-mock" });
       case "/api/tags":
@@ -50,7 +56,7 @@ const server = Bun.serve({
         return Response.json({ done: true });
       case "/api/chat":
         if (!installed.has(String(body.model))) return Response.json({ error: `model "${String(body.model)}" not found, try pulling it first` }, { status: 404 });
-        return Response.json({ model: body.model, message: { content: reply(system) }, done_reason: "stop" });
+        return Response.json({ model: body.model, message: { content: reply(system, user) }, done_reason: "stop" });
       case "/api/pull": {
         const model = String(body.model);
         const stream = new ReadableStream<string>({
