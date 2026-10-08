@@ -11,6 +11,9 @@ namespace LilithAICompanion;
 /// focused, which makes Unity text fields unreliable. A real Win32 edit box gets keyboard focus
 /// properly (RegisterHotKey grants it), and handles dead keys, AltGr and IMEs, so á, ñ, ¿ and
 /// Japanese input all just work.
+/// Styled as a dark frosted-glass pill: Windows 11's acrylic backdrop shows through wherever we paint
+/// black, so everything else (field, buttons, text) is custom-painted. Older Windows gets a solid
+/// plum background with the same layout.
 /// Public methods are thread-safe: they post messages to the window thread.
 /// </summary>
 internal sealed class ChatWindow : IDisposable
@@ -21,6 +24,14 @@ internal sealed class ChatWindow : IDisposable
     private const uint WmShow = WM_APP + 1, WmStatus = WM_APP + 2, WmHotkeyChanged = WM_APP + 3, WmStrings = WM_APP + 4;
     private const uint EmLimitText = 0x00C5;
 
+    // Layout in 96-DPI pixels.
+    private const int WindowWidth = 440, Pad = 10, FieldHeight = 38, Gap = 8, StatusGap = 5, StatusHeight = 18, BottomPad = 8;
+    private const int WindowHeight = Pad + FieldHeight + StatusGap + StatusHeight + BottomPad;
+
+    // The dashboard's dark palette (companion/web/styles.css), so the popup feels like the same app.
+    private const int Background = 0x171427, Field = 0x221D38, Line = 0x3A3358, Ink = 0xECE7F8, Muted = 0xA49CC0, Accent = 0xF06A8A, AccentPressed = 0xD9466A;
+    private const string SendGlyph = "\uE724", SettingsGlyph = "\uE713"; // Segoe MDL2 Assets: paper plane, gear
+
     // Delegates handed to native code must stay referenced for the window's lifetime.
     private static WndProc? s_windowProc;
     private static WndProc? s_editProc;
@@ -29,7 +40,9 @@ internal sealed class ChatWindow : IDisposable
     private readonly ManualResetEventSlim _created = new();
     private Thread? _thread;
     private uint _threadId;
-    private IntPtr _hwnd, _edit, _send, _settings, _status, _font, _symbolFont, _originalEditProc, _previousForeground;
+    private IntPtr _hwnd, _edit, _send, _settings, _status, _font, _statusFont, _iconFont, _originalEditProc, _previousForeground;
+    private IntPtr _backgroundBrush, _fieldBrush, _accentBrush, _accentPressedBrush, _linePen;
+    private uint _backgroundColor;
     private float _scale = 1f;
     private UiStrings _strings;
     private HotkeySpec? _hotkey;
@@ -120,24 +133,34 @@ internal sealed class ChatWindow : IDisposable
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(s_windowProc),
             hInstance = instance,
             hCursor = LoadCursorW(IntPtr.Zero, new IntPtr(32512)), // IDC_ARROW
-            hbrBackground = GetSysColorBrush(COLOR_WINDOW),
-            lpszClassName = ClassName,
+            lpszClassName = ClassName, // no background brush: WM_ERASEBKGND paints it
         };
         RegisterClassExW(ref windowClass); // fails harmlessly if already registered (plugin reload)
 
-        _hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, "Lilith AI", WS_POPUP | WS_BORDER, 0, 0, 420, 80, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+        _hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ClassName, "Lilith AI", WS_POPUP | WS_CLIPCHILDREN, 0, 0, WindowWidth, WindowHeight, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         if (_hwnd == IntPtr.Zero) throw new InvalidOperationException($"CreateWindowEx failed ({Marshal.GetLastWin32Error()})");
         _scale = Math.Max(1f, GetDpiForWindow(_hwnd) / 96f);
 
-        _edit = CreateWindowExW(0, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 0, 0, _hwnd, new IntPtr(IdEdit), instance, IntPtr.Zero);
-        _send = CreateWindowExW(0, "BUTTON", _strings.Send, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, _hwnd, new IntPtr(IdSend), instance, IntPtr.Zero);
-        _settings = CreateWindowExW(0, "BUTTON", "⚙", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, _hwnd, new IntPtr(IdSettings), instance, IntPtr.Zero);
+        // Black is see-through on glass; without glass, paint the solid plum instead.
+        var glass = TryApplyGlass(_hwnd);
+        _backgroundColor = glass ? 0 : Rgb(Background);
+        _backgroundBrush = glass ? GetStockObject(BLACK_BRUSH) : CreateSolidBrush(_backgroundColor);
+        _fieldBrush = CreateSolidBrush(Rgb(Field));
+        _accentBrush = CreateSolidBrush(Rgb(Accent));
+        _accentPressedBrush = CreateSolidBrush(Rgb(AccentPressed));
+        _linePen = CreatePen(PS_INSIDEFRAME, Math.Max(1, S(1)) * SmoothFactor, Rgb(Line));
+
+        _edit = CreateWindowExW(0, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 0, 0, _hwnd, new IntPtr(IdEdit), instance, IntPtr.Zero);
+        // The visible glyph is an icon; the window text stays the localized label for screen readers.
+        _send = CreateWindowExW(0, "BUTTON", _strings.Send, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, _hwnd, new IntPtr(IdSend), instance, IntPtr.Zero);
+        _settings = CreateWindowExW(0, "BUTTON", _strings.Settings, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, _hwnd, new IntPtr(IdSettings), instance, IntPtr.Zero);
         _status = CreateWindowExW(0, "STATIC", "", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS | SS_NOPREFIX, 0, 0, 0, 0, _hwnd, IntPtr.Zero, instance, IntPtr.Zero);
 
-        _font = CreateFontW(-(int)(15 * _scale), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
-        _symbolFont = CreateFontW(-(int)(16 * _scale), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI Symbol");
-        foreach (var control in new[] { _edit, _send, _status }) SendMessageW(control, WM_SETFONT, _font, new IntPtr(1));
-        SendMessageW(_settings, WM_SETFONT, _symbolFont, new IntPtr(1));
+        _font = CreateFontW(-S(15), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+        _statusFont = CreateFontW(-S(12.5f), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+        _iconFont = CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe MDL2 Assets");
+        SendMessageW(_edit, WM_SETFONT, _font, new IntPtr(1));
+        SendMessageW(_status, WM_SETFONT, _statusFont, new IntPtr(1));
         SendMessageW(_edit, EmLimitText, new IntPtr(2000), IntPtr.Zero);
         SendMessageW(_edit, EM_SETCUEBANNER, new IntPtr(1), _strings.Placeholder);
 
@@ -146,16 +169,106 @@ internal sealed class ChatWindow : IDisposable
         Layout();
     }
 
+    /// <summary>Asks DWM for a dark, rounded, acrylic window. False where the backdrop isn't supported (before Windows 11 22H2).</summary>
+    private static bool TryApplyGlass(IntPtr hwnd)
+    {
+        int dark = 1, corners = DWMWCP_ROUND, backdrop = DWMSBT_TRANSIENTWINDOW;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref corners, sizeof(int));
+        if (DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ref backdrop, sizeof(int)) != 0) return false;
+        var sheet = new Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 }; // backdrop behind the whole client area
+        return DwmExtendFrameIntoClientArea(hwnd, ref sheet) == 0;
+    }
+
+    private int S(float value) => (int)(value * _scale);
+
+    /// <summary>The rounded input field, in client coordinates. The send button sits to its right.</summary>
+    private Rect FieldRect() => new()
+    {
+        Left = S(Pad),
+        Top = S(Pad),
+        Right = S(WindowWidth - Pad - Gap - FieldHeight),
+        Bottom = S(Pad + FieldHeight),
+    };
+
     private void Layout()
     {
-        int S(float value) => (int)(value * _scale);
-        int width = S(440), margin = S(10), rowHeight = S(32), settingsWidth = S(36), sendWidth = S(84), gap = S(6);
-        int editWidth = width - margin * 2 - settingsWidth - sendWidth - gap * 2;
-        SetWindowPos(_edit, IntPtr.Zero, margin, margin, editWidth, rowHeight, 0x0004 /* SWP_NOZORDER */);
-        SetWindowPos(_send, IntPtr.Zero, margin + editWidth + gap, margin, sendWidth, rowHeight, 0x0004);
-        SetWindowPos(_settings, IntPtr.Zero, width - margin - settingsWidth, margin, settingsWidth, rowHeight, 0x0004);
-        SetWindowPos(_status, IntPtr.Zero, margin, margin + rowHeight + S(6), width - margin * 2, S(22), 0x0004);
-        SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, width, margin * 2 + rowHeight + S(28), 0x0002 /* SWP_NOMOVE */ | 0x0004);
+        var field = FieldRect();
+        int inset = S(16), button = S(30), textHeight = S(21);
+        int settingsLeft = field.Right - S(4) - button;
+        // Borderless edit, vertically centered inside the painted field; the gear lives at the field's end.
+        SetWindowPos(_edit, IntPtr.Zero, field.Left + inset, field.Top + (field.Bottom - field.Top - textHeight) / 2, settingsLeft - S(4) - field.Left - inset, textHeight, 0x0004 /* SWP_NOZORDER */);
+        SetWindowPos(_settings, IntPtr.Zero, settingsLeft, field.Top + (field.Bottom - field.Top - button) / 2, button, button, 0x0004);
+        SetWindowPos(_send, IntPtr.Zero, field.Right + S(Gap), field.Top, S(FieldHeight), S(FieldHeight), 0x0004);
+        SetWindowPos(_status, IntPtr.Zero, field.Left + inset, field.Bottom + S(StatusGap), S(WindowWidth) - field.Left - inset * 2, S(StatusHeight), 0x0004);
+        SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, S(WindowWidth), S(WindowHeight), 0x0002 /* SWP_NOMOVE */ | 0x0004);
+    }
+
+    // ── Painting ──────────────────────────────────────────────────────────
+
+    private const int SmoothFactor = 4;
+
+    /// <summary>
+    /// GDI shapes have jagged edges, so draw them <see cref="SmoothFactor"/>× larger off-screen and scale
+    /// down with halftoning. <paramref name="draw"/> gets the off-screen DC and the scaled size.
+    /// </summary>
+    private static void DrawSmooth(IntPtr hdc, Rect area, IntPtr background, Action<IntPtr, int, int> draw)
+    {
+        int width = area.Right - area.Left, height = area.Bottom - area.Top;
+        if (width <= 0 || height <= 0) return;
+        var memory = CreateCompatibleDC(hdc);
+        var bitmap = CreateCompatibleBitmap(hdc, width * SmoothFactor, height * SmoothFactor);
+        var previous = SelectObject(memory, bitmap);
+        var all = new Rect { Right = width * SmoothFactor, Bottom = height * SmoothFactor };
+        FillRect(memory, ref all, background);
+        draw(memory, all.Right, all.Bottom);
+        SetStretchBltMode(hdc, HALFTONE);
+        SetBrushOrgEx(hdc, 0, 0, IntPtr.Zero);
+        StretchBlt(hdc, area.Left, area.Top, width, height, memory, 0, 0, all.Right, all.Bottom, SRCCOPY);
+        SelectObject(memory, previous);
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+    }
+
+    private void PaintField()
+    {
+        var hdc = BeginPaint(_hwnd, out var paint);
+        DrawSmooth(hdc, FieldRect(), _backgroundBrush, (dc, width, height) =>
+        {
+            var oldBrush = SelectObject(dc, _fieldBrush);
+            var oldPen = SelectObject(dc, _linePen);
+            RoundRect(dc, 0, 0, width, height, height, height); // fully rounded ends
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+        });
+        EndPaint(_hwnd, ref paint);
+    }
+
+    private void DrawButton(DrawItemStruct item)
+    {
+        var pressed = (item.itemState & ODS_SELECTED) != 0;
+        var hdc = item.hDC;
+        var bounds = item.rcItem;
+        if (item.CtlID == IdSend)
+        {
+            DrawSmooth(hdc, bounds, _backgroundBrush, (dc, width, height) =>
+            {
+                var oldBrush = SelectObject(dc, pressed ? _accentPressedBrush : _accentBrush);
+                var oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+                Ellipse(dc, 0, 0, width + 1, height + 1); // NULL_PEN draws one pixel short
+                SelectObject(dc, oldBrush);
+                SelectObject(dc, oldPen);
+            });
+        }
+        else
+        {
+            FillRect(hdc, ref bounds, _fieldBrush);
+        }
+        var oldFont = SelectObject(hdc, _iconFont);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, item.CtlID == IdSend ? 0xFFFFFF : Rgb(pressed ? Ink : Muted));
+        DrawTextW(hdc, item.CtlID == IdSend ? SendGlyph : SettingsGlyph, -1, ref bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
     }
 
     private IntPtr WindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
@@ -176,6 +289,7 @@ internal sealed class ChatWindow : IDisposable
                     lock (_gate)
                     {
                         SetWindowTextW(_send, _strings.Send);
+                        SetWindowTextW(_settings, _strings.Settings);
                         SendMessageW(_edit, EM_SETCUEBANNER, new IntPtr(1), _strings.Placeholder);
                     }
                     return IntPtr.Zero;
@@ -186,7 +300,26 @@ internal sealed class ChatWindow : IDisposable
                     var id = LowWord(wParam);
                     if (id == IdSend) Submit();
                     else if (id == IdSettings) SettingsRequested?.Invoke();
+                    if (id is IdSend or IdSettings) SetFocus(_edit); // keep typing without clicking back
                     return IntPtr.Zero;
+                case WM_ERASEBKGND:
+                    GetClientRect(hwnd, out var client);
+                    FillRect(wParam, ref client, _backgroundBrush);
+                    return new IntPtr(1);
+                case WM_PAINT:
+                    PaintField();
+                    return IntPtr.Zero;
+                case WM_DRAWITEM:
+                    DrawButton(Marshal.PtrToStructure<DrawItemStruct>(lParam));
+                    return new IntPtr(1);
+                case WM_CTLCOLOREDIT:
+                    SetTextColor(wParam, Rgb(Ink));
+                    SetBkColor(wParam, Rgb(Field));
+                    return _fieldBrush;
+                case WM_CTLCOLORSTATIC:
+                    SetTextColor(wParam, Rgb(Muted));
+                    SetBkColor(wParam, _backgroundColor);
+                    return _backgroundBrush;
                 case WM_ACTIVATE:
                     // Clicking anywhere else closes it, like a menu.
                     if (LowWord(wParam) == WA_INACTIVE) ShowWindow(_hwnd, SW_HIDE);
@@ -266,8 +399,7 @@ internal sealed class ChatWindow : IDisposable
 
         (int X, int Y)? anchor;
         lock (_gate) anchor = _anchor;
-        int S(float value) => (int)(value * _scale);
-        int width = S(440), height = S(80);
+        int width = S(WindowWidth), height = S(WindowHeight);
         var point = anchor is { } a ? new Point { X = a.X, Y = a.Y } : new Point { X = 0, Y = 0 };
         var info = new MonitorInfo { cbSize = (uint)Marshal.SizeOf<MonitorInfo>() };
         GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), ref info);
@@ -325,7 +457,8 @@ internal sealed class ChatWindow : IDisposable
             PostMessageW(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
         if (_threadId != 0) PostThreadMessageW(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-        if (_font != IntPtr.Zero) DeleteObject(_font);
-        if (_symbolFont != IntPtr.Zero) DeleteObject(_symbolFont);
+        // Stock objects (the glass background brush) ignore DeleteObject, so everything can go the same way.
+        foreach (var gdiObject in new[] { _font, _statusFont, _iconFont, _backgroundBrush, _fieldBrush, _accentBrush, _accentPressedBrush, _linePen })
+            if (gdiObject != IntPtr.Zero) DeleteObject(gdiObject);
     }
 }
