@@ -16,6 +16,7 @@ import { openPath as openWithDefaultHandler } from "./open.ts";
 import type { CompanionMessage } from "./protocol.ts";
 import { APP_NAME, startServer, type AppContext } from "./server.ts";
 import { Updater } from "./updater.ts";
+import { Voice } from "./voice/index.ts";
 import pkg from "../package.json" with { type: "json" };
 
 const args = new Set(process.argv.slice(2));
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
   await config.watch(logger.scope("config"));
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
   const keepsakes = await Keepsakes.load(paths.keepsakes, paths.pictures, (message) => log.warn(message));
+  const voice = new Voice(paths.voice, logger.scope("voice"));
 
   let bridge: { send: (message: CompanionMessage) => void } | null = null;
   let dashboardUrl = "";
@@ -86,6 +88,7 @@ async function main(): Promise<void> {
     memory,
     keepsakes,
     logger,
+    voice,
     send: (message) => bridge?.send(message),
     dashboardUrl: () => dashboardUrl,
     openDashboard: () => openPath(dashboardUrl),
@@ -111,6 +114,7 @@ async function main(): Promise<void> {
     logger,
     brain,
     updater,
+    voice,
     paths,
     payloadDir: process.env.LILITH_AI_PAYLOAD_DIR ?? join(exeDir, "payload"),
     selfExe: Bun.isStandaloneExecutable ? process.execPath : null,

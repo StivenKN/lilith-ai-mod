@@ -1,6 +1,7 @@
 // Drives the plugin's Bridge.cs against the real LilithAICompanion.exe, without the game.
 // Checks what can only be verified on Windows: process start without a console, UTF-8 both
-// ways (Spanish text), clean exit on stdin close, and that a crashed host kills the companion.
+// ways (Spanish text), the voice messages, clean exit on stdin close, and that a crashed host
+// kills the companion.
 //
 //   BridgeHarness <LilithAICompanion.exe> <mock AI base URL, e.g. http://127.0.0.1:11555/v1>
 
@@ -69,10 +70,22 @@ T? WaitFor<T>(Func<T, bool> predicate, int seconds = 20) where T : Incoming
 var ready = WaitFor<ReadyMessage>(_ => true);
 Check(ready is not null, "companion answers hello with ready");
 Check(ready?.Strings.Placeholder == "Escríbele a Lilith…", $"ready strings are Spanish and survive UTF-8 decoding ({ready?.Strings.Placeholder})");
+Check(ready is { VoiceHotkey: null }, "talking by voice is off until the player turns it on");
 
 bridgeUnderTest.Send(Protocol.Chat("¿Hola, Lilith? Soy ñandú, ¡pingüino!"));
 var reply = WaitFor<SayMessage>(say => say.Text != "…");
 Check(reply is not null && reply.Text.Any(c => "áéíóúñ¿¡…".Contains(c)), $"a Spanish reply reaches the bubble intact ({reply?.Text.Replace('\n', ' ')})");
+
+// Voice: neither a broken microphone nor a missing speech model ends in silence, and recordings don't pile up.
+bridgeUnderTest.Send(Protocol.VoiceError("harness: no microphone"));
+var micStatus = WaitFor<ChatStatusMessage>(status => status.Kind == "error");
+Check(micStatus?.Text?.Contains("micrófono") == true, $"a microphone failure is explained in Spanish ({micStatus?.Text})");
+var recording = Path.Combine(dataDir, "recording.wav");
+File.WriteAllBytes(recording, new byte[44]);
+bridgeUnderTest.Send(Protocol.Voice(recording));
+var sttStatus = WaitFor<ChatStatusMessage>(status => status.Kind == "error");
+Check(sttStatus?.Text?.Contains("Voz") == true, $"a recording without speech recognition installed points to the Voice tab ({sttStatus?.Text})");
+Check(!File.Exists(recording), "the companion deletes the recording it was sent");
 
 var pid = companionPid;
 var stopwatch = Stopwatch.StartNew();

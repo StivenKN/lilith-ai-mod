@@ -1,9 +1,12 @@
 // Plays the game plugin's side of the bridge in a terminal, so the whole chat loop can be tried
 // without the game (or Windows).   bun scripts/sim.ts [langRaw]     (default "es-419")
-// Type a message to chat. Commands: /sleep, /wake, /busy, /free, /lang <code>, /settings, /quit
+// Type a message to chat. Commands: /sleep, /wake, /busy, /free, /lang <code>, /settings, /quit,
+// /voice <file.wav> (send a copy of a recording, as the microphone hotkey does)
 // Cards written from the dashboard's Cards tab are printed as they reach the simulated inbox.
 
-import { join } from "node:path";
+import { copyFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createLineDecoder } from "../src/bridge.ts";
 import { PROTOCOL_VERSION, type CompanionMessage } from "../src/protocol.ts";
 
@@ -26,7 +29,7 @@ const show = (message: CompanionMessage) => {
       console.log(`\x1b[2m[${message.kind}] ${message.text ?? ""}\x1b[0m`);
       return;
     case "say":
-      console.log(`\x1b[35m💬 (${message.emotion}, ${message.seconds}s)\x1b[0m\n${message.text}\n`);
+      console.log(`\x1b[35m💬 (${message.emotion}, ${message.seconds}s)\x1b[0m\n${message.text}${message.audio ? `\n\x1b[2m🔊 ${message.audio}\x1b[0m` : ""}\n`);
       send({ type: "result", id: message.id, ok: true });
       return;
     case "card":
@@ -49,7 +52,7 @@ send({
   unityVersion: "2021.3.45",
   bepinexVersion: "sim",
   gameDir: "",
-  caps: { say: "ok", busy: "ok", position: "simulated", state: "ok", language: "ok", playerName: "ok", tray: "simulated", hotkey: "simulated", chatWindow: "simulated", card: "ok" },
+  caps: { say: "ok", busy: "ok", position: "simulated", state: "ok", language: "ok", playerName: "ok", tray: "simulated", hotkey: "simulated", chatWindow: "simulated", card: "ok", voiceHotkey: "simulated" },
 });
 
 console.log("Simulated game connected. Type to talk to Lilith (/quit to exit).");
@@ -62,6 +65,12 @@ for await (const input of console) {
   else if (command === "/busy" || command === "/free") (state.busy = command === "/busy"), sendState();
   else if (command === "/lang" && argument) (state.langRaw = argument), sendState();
   else if (command === "/settings") send({ type: "action", name: "dashboard" });
+  else if (command === "/voice" && argument) {
+    // The companion deletes what it's sent, so send a copy.
+    const copy = join(tmpdir(), `lilith-sim-${Date.now()}.wav`);
+    await copyFile(resolve(argument), copy);
+    send({ type: "voice", path: copy });
+  }
   else send({ type: "chat", text });
 }
 child.stdin.end();

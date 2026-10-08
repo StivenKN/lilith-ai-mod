@@ -13,8 +13,9 @@ namespace LilithAICompanion;
 
 /// <summary>
 /// Entry point. Keeps the game side thin: it launches LilithAICompanion.exe (which holds all the
-/// AI logic, settings and the dashboard), forwards chat from the popup, shows replies in Lilith's
-/// speech bubble, leaves her cards in the game's note inbox, and reports her state. Each startup stage is isolated so one failure can't
+/// AI logic, settings and the dashboard), forwards chat and voice recordings from the popup, shows
+/// replies in Lilith's speech bubble (playing her voice when there is one), leaves her cards in the
+/// game's note inbox, and reports her state. Each startup stage is isolated so one failure can't
 /// stop the others, and the game's main thread is never blocked on I/O.
 /// </summary>
 [BepInPlugin(Guid, "Lilith AI Companion", Version)]
@@ -27,7 +28,7 @@ public sealed class Plugin : BasePlugin
 
     private readonly ConcurrentQueue<Action> _mainThread = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
-    private readonly Dictionary<string, string> _localCaps = new() { ["hotkey"] = "waiting for settings", ["chatWindow"] = "not started", ["tray"] = "waiting for settings" };
+    private readonly Dictionary<string, string> _localCaps = new() { ["hotkey"] = "waiting for settings", ["chatWindow"] = "not started", ["tray"] = "waiting for settings", ["voiceHotkey"] = "waiting for settings" };
     private Bridge? _bridge;
     private ChatWindow? _chat;
     private UiStrings _strings = UiStrings.Fallback(spanish: false);
@@ -87,6 +88,30 @@ public sealed class Plugin : BasePlugin
         };
         _chat.SettingsRequested += () => _bridge?.Send(Protocol.Action("dashboard"));
         _chat.HotkeyStatusChanged += status => _mainThread.Enqueue(() => SetLocalCap("hotkey", status));
+        _chat.VoiceHotkeyStatusChanged += status => _mainThread.Enqueue(() => SetLocalCap("voiceHotkey", status));
+        _chat.VoiceRecorded += path =>
+        {
+            if (_bridge is { Connected: true })
+            {
+                _bridge.Send(Protocol.Voice(path)); // the companion deletes it once transcribed
+                return;
+            }
+            _chat.SetStatus(LocalText.NotRunning(IsSpanish()));
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // A leftover in %TEMP% is harmless.
+            }
+        };
+        _chat.VoiceFailed += detail =>
+        {
+            Write("warn", $"microphone: {detail}");
+            if (_bridge is { Connected: true }) _bridge.Send(Protocol.VoiceError(detail)); // answered with a localized explanation
+            else _chat.SetStatus(LocalText.NotRunning(IsSpanish()));
+        };
         _chat.Start();
         SetLocalCap("chatWindow", _chat.Status);
     }
@@ -183,6 +208,7 @@ public sealed class Plugin : BasePlugin
                 _strings = ready.Strings;
                 _chat?.SetStrings(ready.Strings);
                 _chat?.SetHotkey(ready.Hotkey);
+                _chat?.SetVoice(ready.VoiceHotkey);
                 _ready = true;
                 break;
             case SayMessage say:
@@ -192,6 +218,8 @@ public sealed class Plugin : BasePlugin
                     if (error is not null) Write("warn", $"could not show text in the bubble: {error}");
                     _bridge?.Send(Protocol.Result(say.Id, error is null, error));
                 });
+                // Played from here, not the main thread: PlaySound opens the file before returning.
+                if (say.Audio is not null && Speaker.Play(say.Audio) is { } playError) Write("warn", playError);
                 break;
             case CardMessage card:
                 _mainThread.Enqueue(() =>

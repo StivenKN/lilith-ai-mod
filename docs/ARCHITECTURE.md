@@ -11,9 +11,10 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
         ├─ brain       persona · prompt · reply shaping · paging · memory · speak-first
         ├─ search      DuckDuckGo lite (keyless) · Firecrawl (API key)
         ├─ computer    Windows x64 FFI · screenshots · input · bounded tool loop
+        ├─ voice       Piper (speech) · whisper.cpp (recognition), short-lived local processes
         └─ dashboard   Bun.serve on 127.0.0.1:47321+ → React app (setup wizard, settings, help)
 
-%APPDATA%\LilithAICompanion\   config.json · memory.json · keepsakes.json · keepsakes\*.jpg · logs\lilith-ai.log
+%APPDATA%\LilithAICompanion\   config.json · memory.json · keepsakes.json · keepsakes\*.jpg · logs\lilith-ai.log · voice\
 ```
 
 ## Why it's split this way
@@ -85,15 +86,40 @@ Nothing needs a restart after a settings change:
    unreachable…). The player sees a localized, actionable message in the bubble and the popup; the
    technical detail goes to the log and the dashboard.
 
+## Voice
+
+Optional, off by default, and entirely local. Defined in `companion/src/voice/`.
+
+- **Downloads.** Nothing ships in the release. The Voice tab installs what the player turns on: the
+  Piper and whisper.cpp Windows builds, a Piper voice per language, a whisper model. Each file is
+  pinned by URL and SHA-256 in `voice/catalog.ts`, verified while streaming, and only then moved into
+  `voice\`, so a half-finished download never looks installed.
+- **Speaking.** When a reply is paged, every page is queued for speech at once; runs are serialized,
+  so page 2 is synthesized while page 1 plays. Piper writes a WAV, the companion applies the volume to
+  the samples (PlaySound has none), and `say` carries the file's path. A page stays up for its reading
+  time or its audio, whichever is longer. If speech fails, she still shows the text and the reason is
+  logged once and shown in the Voice tab.
+- **Language.** Piper voices exist for Spanish and English. With the voice language on "auto", she
+  speaks when her reply language is one of those; a fixed voice language also sets the reply language.
+- **Listening.** The plugin records with MCI (`waveaudio`, 16 kHz mono) on the chat window's thread:
+  the voice hotkey or the mic button starts it, a second press (or 30 s) stops it, and the plugin sends
+  `voice{path}`. The companion transcribes with whisper.cpp in the reply language, deletes the file,
+  shows "You said: «…»" in the popup, and runs a normal chat turn. Nothing heard → a hint in the popup;
+  a microphone or engine problem → a localized error, like any other.
+- **Paths.** The engines get relative paths only, run from `voice\`: their argv is narrow-char on
+  Windows, and user folders can contain characters it can't represent.
+- **Dashboard.** The chat tab has a mic button (recorded in the browser, sent as WAV) and plays her
+  replies when the game isn't open.
+
 ## Protocol
 
 Defined in `companion/src/protocol.ts` (Zod) and mirrored in `plugin/src/Protocol.cs`.
 
 | plugin → companion | companion → plugin |
 |---|---|
-| `state{idle, sleep, busy, interacting, drag, langRaw, playerName}` | `ready{v, version, dashboardUrl, hotkey, strings}` |
-| `hello{v, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps}` | `say{id, text, emotion, seconds}` |
-| `chat{text}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
+| `state{idle, sleep, busy, interacting, drag, langRaw, playerName}` | `ready{v, version, dashboardUrl, hotkey, voiceHotkey, strings}` |
+| `hello{v, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps}` | `say{id, text, emotion, seconds, audio?}` |
+| `chat{text}` · `voice{path}` · `voiceError{detail}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
 | `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | `yieldFocus{}` · `card{id, text}` (only when `caps.card` is ok) |
 
 Bump `PROTOCOL_VERSION` on both sides for breaking changes. On a version mismatch, the companion exits
@@ -169,6 +195,8 @@ tool round trip. The fake desktop is never selected unless that environment vari
 
 Hotkeys use `RegisterHotKey`, so the popup can take keyboard focus from any app. They don't use
 Unity's `Input`: the game's click-through overlay is rarely focused, so Unity misses the keys.
+Audio doesn't touch the game either: her voice plays through `PlaySound` and the microphone records
+through MCI (both `winmm`), alongside Unity's own audio.
 
 ## Cards
 

@@ -21,6 +21,8 @@ export const dataPaths = (root = dataDir()) => ({
   pictures: join(root, "keepsakes"),
   logs: join(root, "logs"),
   logFile: join(root, "logs", "lilith-ai.log"),
+  /** Voice engines, voices, speech models and the audio cache (see voice/index.ts). */
+  voice: join(root, "voice"),
   /** Written by the running instance so a second launch can hand off to it. */
   instance: join(root, "instance.json"),
 });

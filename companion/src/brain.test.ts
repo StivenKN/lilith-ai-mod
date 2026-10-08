@@ -2,7 +2,7 @@
 // in the bubble, instead of a stock in-character line.
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Brain, computerEnabled } from "./brain.ts";
@@ -12,6 +12,7 @@ import { Keepsakes } from "./keepsakes.ts";
 import { Logger } from "./log.ts";
 import { Memory } from "./memory.ts";
 import type { CompanionMessage } from "./protocol.ts";
+import { VoiceError, type VoiceService } from "./voice/index.ts";
 
 let dir = "";
 let server: ReturnType<typeof Bun.serve>;
@@ -39,7 +40,15 @@ const gameState = { type: "state", idle: true, sleep: false, busy: false, intera
 const hello = (caps: Record<string, string> = {}) =>
   ({ type: "hello", v: 1, pluginVersion: "t", gameVersion: "t", unityVersion: "t", bepinexVersion: "t", gameDir: "", caps }) as const;
 
-async function setup(name: string, options: { desktop?: DesktopStatus; connect?: boolean; caps?: Record<string, string> } = {}) {
+/** Speaks 5 s per page and hears a fixed sentence, unless a test says otherwise. */
+const fakeVoice = (overrides: Partial<VoiceService> = {}): VoiceService => ({
+  speak: async () => ({ file: "C:\\voice\\cache\\say-1.wav", name: "say-00000001.wav", seconds: 5 }),
+  transcribe: async () => "hola desde el micrófono",
+  isInstalled: async () => true,
+  ...overrides,
+});
+
+async function setup(name: string, options: { desktop?: DesktopStatus; connect?: boolean; caps?: Record<string, string>; voice?: VoiceService } = {}) {
   requests = [];
   const config = await ConfigStore.load(join(dir, `${name}-config.json`));
   await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-x", configured: true }, apiKeys: { openai: "sk-test-abcdefghijklmnop" }, features: { computerControl: "off" } });
@@ -47,7 +56,7 @@ async function setup(name: string, options: { desktop?: DesktopStatus; connect?:
   const keepsakes = await Keepsakes.load(join(dir, `${name}-keepsakes.json`), join(dir, `${name}-pictures`));
   const logger = new Logger(null);
   const sent: CompanionMessage[] = [];
-  const brain = new Brain({ version: "test", config, memory, keepsakes, logger, send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(options.desktop ? { desktop: options.desktop } : {}) });
+  const brain = new Brain({ version: "test", config, memory, keepsakes, logger, voice: options.voice ?? fakeVoice(), send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(options.desktop ? { desktop: options.desktop } : {}) });
   brain.handlePluginMessage(gameState);
   if (options.connect !== false) brain.handlePluginMessage(hello(options.caps));
   return { brain, sent, logger, memory, config, keepsakes };
@@ -417,5 +426,86 @@ describe("Cards", () => {
     expect(JSON.stringify(requests[1]?.messages)).not.toContain("base64");
     expect(sent).toContainEqual(expect.objectContaining({ type: "say", text: "¡Qué gato tan cómodo!" }));
     expect(memory.history.at(-1)).toMatchObject({ source: "keepsake" });
+  });
+});
+
+describe("Brain with voice", () => {
+  const heard = () => reply("[feliz] Te escucho perfectamente.");
+
+  test("speaks each page and keeps it up for as long as the audio lasts", async () => {
+    respond = heard;
+    const spoken: string[] = [];
+    const { brain, sent, config } = await setup("speak", { voice: fakeVoice({ speak: async (text, options) => (spoken.push(`${options.voice}: ${text}`), { file: "C:\\say.wav", name: "say-00000002.wav", seconds: 6 }) }) });
+    await config.update({ voice: { speak: true } });
+    await brain.chat("¿me oyes?", "game");
+    await Bun.sleep(20);
+    expect(spoken).toEqual(["es_AR-daniela-high: Te escucho perfectamente."]);
+    const say = sent.find((m) => m.type === "say" && m.text !== "…");
+    expect(say).toMatchObject({ audio: "C:\\say.wav", emotion: "happy" });
+    expect(say?.type === "say" && say.seconds).toBeGreaterThanOrEqual(6);
+  });
+
+  test("still shows the reply, silently, when speaking fails", async () => {
+    respond = heard;
+    const { brain, sent, config } = await setup("speak-fails", { voice: fakeVoice({ speak: async () => Promise.reject(new VoiceError("not_installed", "The voice isn't installed")) }) });
+    await config.update({ voice: { speak: true } });
+    await brain.chat("hola", "game");
+    await Bun.sleep(20);
+    const say = sent.find((m) => m.type === "say" && m.text !== "…");
+    expect(say).toMatchObject({ text: "Te escucho perfectamente." });
+    expect(say && "audio" in say).toBe(false);
+    expect(brain.lastVoiceError?.detail).toContain("isn't installed");
+  });
+
+  test("a fixed voice language also sets the reply language, only while she speaks", async () => {
+    const { brain, config } = await setup("language");
+    await config.update({ voice: { language: "en" } });
+    expect(brain.replyLanguage()).toBe("es"); // the game is in Spanish and her voice is off
+    await config.update({ voice: { speak: true } });
+    expect(brain.replyLanguage()).toBe("en");
+    expect(brain.spokenLanguage()).toBe("en");
+  });
+
+  test("a recording becomes a chat turn, shows what was heard, and is deleted", async () => {
+    respond = heard;
+    const { brain, sent, memory } = await setup("listen");
+    const recording = join(dir, "recording.wav");
+    await writeFile(recording, "RIFF");
+    const result = await brain.voiceChat(recording, "game");
+    expect(result).toMatchObject({ ok: true, text: "Te escucho perfectamente." });
+    expect(sent).toContainEqual({ type: "chatStatus", kind: "thinking", text: "Dijiste: «hola desde el micrófono». Lilith está pensando…" });
+    expect(memory.history.at(-2)).toMatchObject({ role: "user", content: "hola desde el micrófono", source: "game" });
+    expect(await stat(recording).then(() => true, () => false)).toBe(false);
+  });
+
+  test("a spoken request can use the PC, like a typed one", async () => {
+    const desktop = new FakeDesktop();
+    respond = async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+      if (path === "/api/ps") return Response.json({ models: [] });
+      const body = await request.json() as { messages: Array<{ role: string }> };
+      return Response.json({ message: body.messages.some((message) => message.role === "tool")
+        ? { content: "[feliz] Abrí la calculadora." }
+        : { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] } });
+    };
+    const { brain, config } = await setup("listen-computer", { desktop: { available: true, desktop }, voice: fakeVoice({ transcribe: async () => "abre la calculadora" }) });
+    await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "qwen" }, features: { computerControl: "auto", learnFacts: false } });
+    expect(await brain.voiceChat(join(dir, "missing.wav"), "dashboard")).toMatchObject({ ok: true, text: "Abrí la calculadora." });
+    expect(desktop.actions).toEqual([{ type: "openApp", name: "Calculadora" }]);
+  });
+
+  test("silence gets a gentle hint in the chat window, not an error in her bubble", async () => {
+    const { brain, sent } = await setup("silence", { voice: fakeVoice({ transcribe: async () => Promise.reject(new VoiceError("no_speech", "No speech was recognized")) }) });
+    expect(await brain.voiceChat(join(dir, "missing.wav"), "game")).toBeNull();
+    expect(sent).toContainEqual(expect.objectContaining({ type: "chatStatus", kind: "error", text: expect.stringContaining("No te entendí") }));
+    expect(sent.some((m) => m.type === "say" && m.text.startsWith("Lilith AI:"))).toBe(false);
+  });
+
+  test("ready tells the plugin the microphone shortcut only when listening is on", async () => {
+    const { sent, config } = await setup("ready");
+    expect(sent.findLast((m) => m.type === "ready")).toMatchObject({ voiceHotkey: null });
+    await config.update({ voice: { listen: true } });
+    expect(sent.findLast((m) => m.type === "ready")).toMatchObject({ voiceHotkey: { key: "F8" }, strings: { listening: "Te escucho… pulsa F8 otra vez para enviar." } });
   });
 });

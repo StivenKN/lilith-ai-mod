@@ -2,9 +2,11 @@
 // empty-reply and repetition retries, bubble paging, and plain-language errors that always
 // reach the player (in the bubble and the chat window) instead of a stock in-character line.
 // Also writes the cards she leaves in the game's inbox, from what the player chose to share.
+// With voice on, each bubble page is spoken too, and microphone recordings become chat turns.
 
+import { rm } from "node:fs/promises";
 import type { ConfigStore } from "./config.ts";
-import { apiKeyFor } from "./config.ts";
+import { apiKeyFor, type Hotkey } from "./config.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import type { Action } from "./computer/actions.ts";
@@ -34,6 +36,8 @@ import { getPreset, isLocalUrl } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { isRepeat, paginate, parseReply } from "./reply.ts";
 import { createSearcher, findSearchRequest, stripSearchTags } from "./search.ts";
+import type { SpokenLanguage } from "./voice/catalog.ts";
+import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
 
 const MAX_TOKENS = 1024;
 const RETRY_MAX_TOKENS = 4096;
@@ -59,6 +63,7 @@ export interface BrainOptions {
   memory: Memory;
   keepsakes: Keepsakes;
   logger: Logger;
+  voice: VoiceService;
   /** Sends a message to the plugin (no-op when the game isn't attached). */
   send: (message: CompanionMessage) => void;
   dashboardUrl: () => string;
@@ -96,6 +101,7 @@ export class Brain {
   #computerActed = false;
   #stopped = false;
   lastError: (TurnFailure & { at: string }) | null = null;
+  lastVoiceError: { at: string; detail: string } | null = null;
   lastTurn: { at: string; latencyMs: number; model: string } | null = null;
 
   constructor(private readonly options: BrainOptions) {
@@ -153,6 +159,16 @@ export class Brain {
       case "chat":
         void this.chat(message.text, "game");
         return;
+      case "voice":
+        void this.voiceChat(message.path, "game");
+        return;
+      case "voiceError": {
+        this.#log.warn(`microphone failed: ${message.detail}`);
+        const text = translator(this.uiLocale())("voice.error.microphone");
+        this.options.send({ type: "chatStatus", kind: "error", text });
+        this.#say(`${translator(this.uiLocale())("bubble.errorPrefix")}${text}`, "sad", 10);
+        return;
+      }
       case "action":
         this.options.openDashboard();
         return;
@@ -212,13 +228,14 @@ export class Brain {
 
   #sendReady(): void {
     const tr = translator(this.uiLocale());
-    const { hotkey } = this.options.config.current;
+    const { hotkey, voice } = this.options.config.current;
     this.options.send({
       type: "ready",
       v: PROTOCOL_VERSION,
       version: this.options.version,
       dashboardUrl: this.options.dashboardUrl(),
       hotkey,
+      voiceHotkey: voice.listen ? voice.hotkey : null,
       strings: {
         placeholder: tr("plugin.placeholder"),
         thinking: tr("plugin.thinking"),
@@ -226,15 +243,21 @@ export class Brain {
         settings: tr("plugin.settings"),
         trayTalk: tr("plugin.trayTalk"),
         traySettings: tr("plugin.traySettings"),
+        listening: tr("plugin.listening", { key: hotkeyLabel(voice.hotkey) }),
+        talk: tr("plugin.talk"),
       },
     });
   }
 
   // ── Languages ──────────────────────────────────────────────────────────────
 
-  /** Explicit setting, else the game's language, else the dashboard language the player picked, else the OS. */
+  /**
+   * A fixed voice language while she speaks aloud, else the explicit setting, else the game's
+   * language, else the dashboard language the player picked, else the OS.
+   */
   replyLanguage(): Language {
-    const { replyLanguage, uiLanguage } = this.options.config.current;
+    const { replyLanguage, uiLanguage, voice } = this.options.config.current;
+    if (voice.speak && voice.language !== "auto") return voice.language;
     if (replyLanguage !== "auto") return replyLanguage;
     return (
       resolveLanguage(this.#state?.langRaw) ??
@@ -244,6 +267,12 @@ export class Brain {
     );
   }
 
+  /** The language her voice speaks, or null when she replies in one Piper has no voice for. */
+  spokenLanguage(): SpokenLanguage | null {
+    const language = this.replyLanguage();
+    return language === "es" || language === "en" ? language : null;
+  }
+
   uiLocale(): UiLocale {
     const setting = this.options.config.current.uiLanguage;
     return setting === "auto" ? uiLocaleFor(this.replyLanguage()) : setting;
@@ -251,13 +280,47 @@ export class Brain {
 
   // ── Conversation ───────────────────────────────────────────────────────────
 
-  /** Queues a user message. Resolves with Lilith's reply or a classified, localized error. */
-  chat(text: string, source: StoredTurn["source"]): Promise<TurnResult> {
+  /**
+   * Queues a user message. Resolves with Lilith's reply or a classified, localized error.
+   * `thinking` replaces the usual status line while she answers.
+   */
+  chat(text: string, source: StoredTurn["source"], thinking?: string): Promise<TurnResult> {
     this.#computerEpoch++;
     if (this.#computerActed) this.#computerAbort?.abort();
     const computerEpoch = this.#computerEpoch;
     this.#lastActivity = Date.now();
-    return this.#enqueue(() => this.#runTurn({ user: text.trim(), source, computerEpoch }));
+    return this.#enqueue(() => this.#runTurn({ user: text.trim(), source, computerEpoch, thinking }));
+  }
+
+  /**
+   * A microphone recording: transcribe it, then treat the words as a chat message. Failures are
+   * explained like any other error, in the chat window and the bubble.
+   */
+  async voiceChat(path: string, source: StoredTurn["source"]): Promise<TurnResult | null> {
+    const tr = translator(this.uiLocale());
+    const { voice } = this.options.config.current;
+    this.#lastActivity = Date.now();
+    this.options.send({ type: "chatStatus", kind: "thinking", text: tr("voice.transcribing") });
+    const heard = await this.options.voice.transcribe(path, { model: voice.sttModel, language: this.replyLanguage() }).then(
+      (text) => ({ text }),
+      (error: unknown) => ({ error }),
+    );
+    // The plugin's recording is ours to delete, whatever happened.
+    if (source === "game") await rm(path, { force: true }).catch(() => {});
+    if ("error" in heard) {
+      const kind = heard.error instanceof VoiceError ? heard.error.kind : "failed";
+      this.#log.warn(`speech recognition failed (${kind}): ${errorMessage(heard.error)}`);
+      if (kind !== "no_speech") this.lastVoiceError = { at: new Date().toISOString(), detail: errorMessage(heard.error) };
+      const message = tr(`voice.error.${kind}`);
+      this.options.send({ type: "chatStatus", kind: "error", text: message });
+      if (this.#connected && kind !== "no_speech") this.#say(`${tr("bubble.errorPrefix")}${message}`, "sad", 10);
+      this.#emit({ type: "error" });
+      return null;
+    }
+    const { text } = heard;
+    this.#log.info(`heard ${text.length} chars from the microphone`);
+    // The status line shows what was heard while she thinks, so a misheard word is obvious.
+    return this.chat(text, source, tr("voice.heard", { text }));
   }
 
   /** One-off check from the dashboard: a real persona prompt, nothing stored or shown in game. */
@@ -287,7 +350,7 @@ export class Brain {
     return this.#turnActive;
   }
 
-  async #runTurn(input: { user: string | null; source: StoredTurn["source"]; idleMinutes?: number; computerEpoch?: number }): Promise<TurnResult> {
+  async #runTurn(input: { user: string | null; source: StoredTurn["source"]; idleMinutes?: number; computerEpoch?: number; thinking?: string | undefined }): Promise<TurnResult> {
     const config = this.options.config.current;
     const settings = this.#providerSettings();
     const tr = translator(this.uiLocale());
@@ -298,7 +361,7 @@ export class Brain {
     this.#pagingToken++;
 
     if (!speakFirst) {
-      this.options.send({ type: "chatStatus", kind: "thinking", text: tr("plugin.thinking") });
+      this.options.send({ type: "chatStatus", kind: "thinking", text: input.thinking ?? tr("plugin.thinking") });
       if (inGame) this.#say("…", "neutral", 120);
     }
     const escalation = this.#escalateWhileWaiting(settings, tr, started, !speakFirst);
@@ -581,20 +644,49 @@ export class Brain {
     const token = ++this.#pagingToken;
     const { bubbleLineUnits, bubbleLines } = this.options.config.current.advanced;
     const pages = paginate(text, bubbleLineUnits, bubbleLines);
+    // Every page is queued for speech at once; the voice runs them in order, so page 2 is being
+    // synthesized while page 1 plays.
+    const audio = pages.map((page) => this.#speak(page.text));
     for (const [index, page] of pages.entries()) {
+      const spoken = await audio[index];
       if (token !== this.#pagingToken) return; // a newer turn took over the bubble
       if (ambient && index === 0 && this.#state?.busy) {
         this.#log.info("speak-first remark dropped: Lilith is busy");
         return;
       }
       const last = index === pages.length - 1;
-      this.#say(page.text, emotion, page.seconds + (last ? 2 : 0.5));
-      if (!last) await Bun.sleep(page.seconds * 1000);
+      // The page stays up for as long as she's reading it or saying it, whichever is longer.
+      const seconds = Math.max(page.seconds, (spoken?.seconds ?? 0) + 0.3);
+      this.#say(page.text, emotion, seconds + (last ? 2 : 0.5), spoken?.file);
+      if (!last) await Bun.sleep(seconds * 1000);
     }
   }
 
-  #say(text: string, emotion: Emotion, seconds: number): void {
-    this.options.send({ type: "say", id: crypto.randomUUID().slice(0, 8), text, emotion, seconds: Math.round(seconds * 10) / 10 });
+  /** Speech for one page, or null when the voice is off or failed (she still shows the text). */
+  async #speak(text: string): Promise<Spoken | null> {
+    const { voice } = this.options.config.current;
+    const language = this.spokenLanguage();
+    if (!voice.speak || !language) return null;
+    try {
+      return await this.options.voice.speak(text, { voice: language === "es" ? voice.esVoice : voice.enVoice, speed: voice.speed, volume: voice.volume });
+    } catch (error) {
+      const detail = errorMessage(error);
+      // Once per distinct problem, so a missing voice doesn't flood the log every reply.
+      if (this.lastVoiceError?.detail !== detail) this.#log.warn(`could not speak: ${detail}`);
+      this.lastVoiceError = { at: new Date().toISOString(), detail };
+      return null;
+    }
+  }
+
+  #say(text: string, emotion: Emotion, seconds: number, audio?: string): void {
+    this.options.send({
+      type: "say",
+      id: crypto.randomUUID().slice(0, 8),
+      text,
+      emotion,
+      seconds: Math.round(seconds * 10) / 10,
+      ...(audio ? { audio } : {}),
+    });
   }
 
   #maybeSpeakFirst(): void {
@@ -806,8 +898,10 @@ export class Brain {
       state: this.#state,
       busy: this.#turnActive,
       replyLanguage: this.replyLanguage(),
+      spokenLanguage: this.spokenLanguage(),
       uiLocale: this.uiLocale(),
       lastError: this.lastError,
+      lastVoiceError: this.lastVoiceError,
       lastTurn: this.lastTurn,
       computer: {
         mode: this.options.config.current.features.computerControl,
@@ -824,6 +918,7 @@ const warmKey = (settings: ProviderSettings) => `${settings.baseUrl}|${settings.
 
 export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
   mode === "on" || (mode === "auto" && isLocalUrl(settings.baseUrl));
+const hotkeyLabel = (hotkey: Hotkey) => [hotkey.ctrl && "Ctrl", hotkey.alt && "Alt", hotkey.shift && "Shift", hotkey.key].filter(Boolean).join("+");
 
 /** Label used in error messages: the preset name, or the host for custom servers. */
 export function providerLabel(settings: Pick<ProviderSettings, "preset" | "baseUrl">): string {

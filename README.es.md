@@ -16,6 +16,11 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
 - **Español completo.** Su personalidad está escrita en español latinoamericano, no traducida. El
   panel, los mensajes del juego y esta guía están en español. Responde en el idioma del juego (12
   idiomas) o en el que elijas.
+- **Voz** (opcional, todo en tu PC). Puede decir sus respuestas en voz alta, en español o inglés, y
+  tú puedes hablarle: pulsa **F8**, habla y vuelve a pulsarla. La voz la genera
+  [Piper](https://github.com/rhasspy/piper) y la reconoce
+  [whisper.cpp](https://github.com/ggml-org/whisper.cpp); la pestaña **Voz** del panel descarga solo
+  lo que actives (entre 100 y 400 MB) y te deja elegir su voz, velocidad y volumen.
 - **Memoria.** Sigue la conversación y guarda datos sobre ti que puedes leer, editar y borrar.
 - **Tarjetas de Lilith.** Te deja tarjetas escritas a mano en la bandeja de notas del propio juego,
   como mucho una al día, sobre lo que han hablado y lo que decidas compartirle: notas, y fotos que
@@ -69,6 +74,8 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
 ## Uso diario
 
 - **F7**: abre la ventana de chat junto a Lilith. **Enter** envía, **Esc** la cierra.
+- **F8** (si activaste «Hablarle con tu micrófono» en la pestaña **Voz**): empieza a escucharte;
+  pulsa otra vez para enviar. El botón del micrófono en la ventana de chat hace lo mismo.
 - **Botón ⚙** de esa ventana, o **«Configuración de Lilith AI»** en el menú de la bandeja del juego:
   abre el panel (IA, personalidad, memoria, ajustes, ayuda).
 - El panel también tiene una pestaña **Chat**, por si quieres escribirle desde el navegador.
@@ -78,6 +85,8 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
 - Tu configuración, tu clave de API, la memoria y los registros se guardan solo en tu PC, en
   `%APPDATA%\LilithAICompanion`.
 - Con Ollama u otro servidor en este PC, nada sale de tu PC. Un servidor en tu red local recibe los datos por esa red.
+- La voz siempre funciona en tu PC. Las grabaciones se borran en cuanto se convierten en texto, y lo
+  que dices solo sale de tu PC como ese texto, igual que un mensaje escrito.
 - Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente, la
   personalidad de Lilith, las notas sobre ti, lo que le compartes para sus tarjetas, la hora y tu
   nombre de jugador. Tu clave solo se envía a ese servicio.

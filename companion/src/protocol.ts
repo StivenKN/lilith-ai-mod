@@ -6,6 +6,8 @@
 // `ready` again whenever settings or the game language change).
 // `say` and `card` are both answered with `result{id}`. Adding a message an older plugin ignores
 // (as `card` was) doesn't need a version bump; the capability list tells which plugin can show it.
+// Voice: `ready.voiceHotkey` turns the plugin's microphone on; it records to a WAV file and sends
+// `voice{path}` (or `voiceError`). A `say` may carry `audio`, a WAV file the plugin plays with it.
 
 import { z } from "zod";
 
@@ -27,8 +29,11 @@ export const capabilityNames = [
   "hotkey",
   "chatWindow",
   "card",
+  "voiceHotkey",
 ] as const;
 export type CapabilityName = (typeof capabilityNames)[number];
+/** Status of a capability the player turned off (e.g. the microphone shortcut): not a failure. */
+export const CAP_OFF = "off";
 
 const GameState = z.object({
   idle: z.boolean(),
@@ -54,6 +59,10 @@ export const PluginMessage = z.discriminatedUnion("type", [
   }),
   GameState.extend({ type: z.literal("state") }),
   z.object({ type: z.literal("chat"), text: z.string().min(1).max(4000) }),
+  /** A finished microphone recording (16 kHz mono WAV); the companion deletes it once transcribed. */
+  z.object({ type: z.literal("voice"), path: z.string().min(1) }),
+  /** The microphone couldn't record; `detail` is the technical reason. */
+  z.object({ type: z.literal("voiceError"), detail: z.string() }),
   z.object({ type: z.literal("action"), name: z.enum(["dashboard"]) }),
   z.object({ type: z.literal("result"), id: z.string(), ok: z.boolean(), error: z.string().optional() }),
   z.object({ type: z.literal("log"), level: z.enum(["debug", "info", "warn", "error"]), msg: z.string() }),
@@ -69,7 +78,13 @@ export interface PluginStrings {
   settings: string;
   trayTalk: string;
   traySettings: string;
+  /** Status line while recording, e.g. "Listening… press F8 to send". */
+  listening: string;
+  /** Accessible label of the microphone button. */
+  talk: string;
 }
+
+type HotkeyMessage = { key: string; ctrl: boolean; alt: boolean; shift: boolean };
 
 export type CompanionMessage =
   | { type: "yieldFocus" }
@@ -78,10 +93,12 @@ export type CompanionMessage =
       v: number;
       version: string;
       dashboardUrl: string;
-      hotkey: { key: string; ctrl: boolean; alt: boolean; shift: boolean };
+      hotkey: HotkeyMessage;
+      /** null: talking with the microphone is turned off. */
+      voiceHotkey: HotkeyMessage | null;
       strings: PluginStrings;
     }
-  | { type: "say"; id: string; text: string; emotion: Emotion; seconds: number }
+  | { type: "say"; id: string; text: string; emotion: Emotion; seconds: number; audio?: string }
   /** A handwritten card for the game's own note inbox. Sent only when the plugin reports `card: ok`. */
   | { type: "card"; id: string; text: string }
   | { type: "chatStatus"; kind: "idle" | "thinking" | "error"; text?: string };

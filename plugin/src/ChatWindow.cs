@@ -14,16 +14,20 @@ namespace LilithAICompanion;
 /// Styled as a dark frosted-glass pill: Windows 11's acrylic backdrop shows through wherever we paint
 /// black, so everything else (field, buttons, text) is custom-painted. Older Windows gets a solid
 /// plum background with the same layout.
+/// With voice on, a second hotkey (and a mic button in the field) starts and stops recording; the
+/// recording happens on this thread too, since MCI devices belong to the thread that opened them.
 /// Public methods are thread-safe: they post messages to the window thread.
 /// </summary>
 internal sealed class ChatWindow : IDisposable
 {
     private const string ClassName = "LilithAICompanionChat";
-    private const int HotkeyId = 1;
-    private const int IdEdit = 1, IdSend = 2, IdSettings = 3;
-    private const uint WmShow = WM_APP + 1, WmStatus = WM_APP + 2, WmHotkeyChanged = WM_APP + 3, WmStrings = WM_APP + 4;
+    private const int HotkeyId = 1, VoiceHotkeyId = 2;
+    private const int IdEdit = 1, IdSend = 2, IdSettings = 3, IdMic = 4;
+    private const uint WmShow = WM_APP + 1, WmStatus = WM_APP + 2, WmHotkeyChanged = WM_APP + 3, WmStrings = WM_APP + 4, WmYieldFocus = WM_APP + 5, WmVoiceChanged = WM_APP + 6;
+    /// <summary>A recording stops on its own after this long, in case the second key press never comes.</summary>
+    private const uint VoiceLimitMs = 30_000;
+    private const int VoiceTimerId = 1;
     private const uint EmLimitText = 0x00C5;
-    private const uint WmYieldFocus = WM_APP + 5;
 
     // Layout in 96-DPI pixels.
     private const int WindowWidth = 440, Pad = 10, FieldHeight = 38, Gap = 8, StatusGap = 5, StatusHeight = 18, BottomPad = 8;
@@ -31,7 +35,7 @@ internal sealed class ChatWindow : IDisposable
 
     // The dashboard's dark palette (companion/web/styles.css), so the popup feels like the same app.
     private const int Background = 0x171427, Field = 0x221D38, Line = 0x3A3358, Ink = 0xECE7F8, Muted = 0xA49CC0, Accent = 0xF06A8A, AccentPressed = 0xD9466A;
-    private const string SendGlyph = "\uE724", SettingsGlyph = "\uE713"; // Segoe MDL2 Assets: paper plane, gear
+    private const string SendGlyph = "\uE724", SettingsGlyph = "\uE713", MicGlyph = "\uE720"; // Segoe MDL2 Assets: paper plane, gear, microphone
 
     // Delegates handed to native code must stay referenced for the window's lifetime.
     private static WndProc? s_windowProc;
@@ -41,12 +45,15 @@ internal sealed class ChatWindow : IDisposable
     private readonly ManualResetEventSlim _created = new();
     private Thread? _thread;
     private uint _threadId;
-    private IntPtr _hwnd, _edit, _send, _settings, _status, _font, _statusFont, _iconFont, _originalEditProc, _previousForeground;
+    private readonly Microphone _microphone = new();
+    private IntPtr _hwnd, _edit, _send, _settings, _mic, _status, _font, _statusFont, _iconFont, _originalEditProc, _previousForeground;
     private IntPtr _backgroundBrush, _fieldBrush, _accentBrush, _accentPressedBrush, _linePen;
     private uint _backgroundColor;
     private float _scale = 1f;
     private UiStrings _strings;
     private HotkeySpec? _hotkey;
+    private HotkeySpec? _voiceHotkey;
+    private bool _voiceEnabled;
     private string _statusText = "";
     private (int X, int Y)? _anchor;
 
@@ -58,6 +65,12 @@ internal sealed class ChatWindow : IDisposable
     public event Action? SettingsRequested;
     /// <summary>Hotkey registration result: "ok" or why it failed (raised on the window thread).</summary>
     public event Action<string>? HotkeyStatusChanged;
+    /// <summary>Microphone hotkey: "ok", <see cref="Protocol.CapOff"/>, or why it failed (raised on the window thread).</summary>
+    public event Action<string>? VoiceHotkeyStatusChanged;
+    /// <summary>A finished recording, as a WAV file path (raised on the window thread).</summary>
+    public event Action<string>? VoiceRecorded;
+    /// <summary>The microphone couldn't record; technical reason (raised on the window thread).</summary>
+    public event Action<string>? VoiceFailed;
 
     public string Status { get; private set; } = "not started";
 
@@ -96,6 +109,13 @@ internal sealed class ChatWindow : IDisposable
         PostMessageW(_hwnd, WmHotkeyChanged, IntPtr.Zero, IntPtr.Zero);
     }
 
+    /// <summary>The microphone shortcut, or null to turn talking by voice off.</summary>
+    public void SetVoice(HotkeySpec? hotkey)
+    {
+        lock (_gate) _voiceHotkey = hotkey;
+        PostMessageW(_hwnd, WmVoiceChanged, IntPtr.Zero, IntPtr.Zero);
+    }
+
     public void Show() => PostMessageW(_hwnd, WmShow, IntPtr.Zero, IntPtr.Zero);
 
     public void YieldFocus() => PostMessageW(_hwnd, WmYieldFocus, IntPtr.Zero, IntPtr.Zero);
@@ -124,6 +144,7 @@ internal sealed class ChatWindow : IDisposable
             TranslateMessage(ref msg); // turns dead keys / AltGr into the right characters
             DispatchMessageW(ref msg);
         }
+        _microphone.Cancel(); // on this thread: it owns the MCI device
     }
 
     private void CreateWindows()
@@ -157,6 +178,7 @@ internal sealed class ChatWindow : IDisposable
         // The visible glyph is an icon; the window text stays the localized label for screen readers.
         _send = CreateWindowExW(0, "BUTTON", _strings.Send, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, _hwnd, new IntPtr(IdSend), instance, IntPtr.Zero);
         _settings = CreateWindowExW(0, "BUTTON", _strings.Settings, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, _hwnd, new IntPtr(IdSettings), instance, IntPtr.Zero);
+        _mic = CreateWindowExW(0, "BUTTON", _strings.Talk, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 0, 0, _hwnd, new IntPtr(IdMic), instance, IntPtr.Zero); // shown when voice is on
         _status = CreateWindowExW(0, "STATIC", "", WS_CHILD | WS_VISIBLE | SS_ENDELLIPSIS | SS_NOPREFIX, 0, 0, 0, 0, _hwnd, IntPtr.Zero, instance, IntPtr.Zero);
 
         _font = CreateFontW(-S(15), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
@@ -199,9 +221,13 @@ internal sealed class ChatWindow : IDisposable
         var field = FieldRect();
         int inset = S(16), button = S(30), textHeight = S(21);
         int settingsLeft = field.Right - S(4) - button;
-        // Borderless edit, vertically centered inside the painted field; the gear lives at the field's end.
-        SetWindowPos(_edit, IntPtr.Zero, field.Left + inset, field.Top + (field.Bottom - field.Top - textHeight) / 2, settingsLeft - S(4) - field.Left - inset, textHeight, 0x0004 /* SWP_NOZORDER */);
-        SetWindowPos(_settings, IntPtr.Zero, settingsLeft, field.Top + (field.Bottom - field.Top - button) / 2, button, button, 0x0004);
+        int micLeft = settingsLeft - S(2) - button;
+        int buttonTop = field.Top + (field.Bottom - field.Top - button) / 2;
+        // Borderless edit, vertically centered inside the painted field; the mic and the gear live at the field's end.
+        int editRight = (_voiceEnabled ? micLeft : settingsLeft) - S(4);
+        SetWindowPos(_edit, IntPtr.Zero, field.Left + inset, field.Top + (field.Bottom - field.Top - textHeight) / 2, editRight - field.Left - inset, textHeight, 0x0004 /* SWP_NOZORDER */);
+        SetWindowPos(_mic, IntPtr.Zero, micLeft, buttonTop, button, button, 0x0004);
+        SetWindowPos(_settings, IntPtr.Zero, settingsLeft, buttonTop, button, button, 0x0004);
         SetWindowPos(_send, IntPtr.Zero, field.Right + S(Gap), field.Top, S(FieldHeight), S(FieldHeight), 0x0004);
         SetWindowPos(_status, IntPtr.Zero, field.Left + inset, field.Bottom + S(StatusGap), S(WindowWidth) - field.Left - inset * 2, S(StatusHeight), 0x0004);
         SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, S(WindowWidth), S(WindowHeight), 0x0002 /* SWP_NOMOVE */ | 0x0004);
@@ -252,9 +278,11 @@ internal sealed class ChatWindow : IDisposable
         var pressed = (item.itemState & ODS_SELECTED) != 0;
         var hdc = item.hDC;
         var bounds = item.rcItem;
-        if (item.CtlID == IdSend)
+        // The send button is always an accent circle; the mic turns into one while it's recording.
+        var filled = item.CtlID == IdSend || (item.CtlID == IdMic && _microphone.Recording);
+        if (filled)
         {
-            DrawSmooth(hdc, bounds, _backgroundBrush, (dc, width, height) =>
+            DrawSmooth(hdc, bounds, item.CtlID == IdSend ? _backgroundBrush : _fieldBrush, (dc, width, height) =>
             {
                 var oldBrush = SelectObject(dc, pressed ? _accentPressedBrush : _accentBrush);
                 var oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
@@ -269,8 +297,9 @@ internal sealed class ChatWindow : IDisposable
         }
         var oldFont = SelectObject(hdc, _iconFont);
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, item.CtlID == IdSend ? 0xFFFFFF : Rgb(pressed ? Ink : Muted));
-        DrawTextW(hdc, item.CtlID == IdSend ? SendGlyph : SettingsGlyph, -1, ref bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(hdc, filled ? 0xFFFFFF : Rgb(pressed ? Ink : Muted));
+        var glyph = item.CtlID switch { IdSend => SendGlyph, IdMic => MicGlyph, _ => SettingsGlyph };
+        DrawTextW(hdc, glyph, -1, ref bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(hdc, oldFont);
     }
 
@@ -280,10 +309,19 @@ internal sealed class ChatWindow : IDisposable
         {
             switch (message)
             {
+                case WM_HOTKEY when (int)(long)wParam == VoiceHotkeyId:
+                    ToggleRecording();
+                    return IntPtr.Zero;
                 case WM_HOTKEY:
                 case WmShow:
                     if (message == WM_HOTKEY && IsWindowVisible(_hwnd)) HideAndRestoreFocus();
                     else ShowNearLilith();
+                    return IntPtr.Zero;
+                case WmVoiceChanged:
+                    ApplyVoiceSettings();
+                    return IntPtr.Zero;
+                case WM_TIMER when (long)wParam == VoiceTimerId:
+                    if (_microphone.Recording) StopRecording();
                     return IntPtr.Zero;
                 case WmStatus:
                     lock (_gate) SetWindowTextW(_status, _statusText);
@@ -300,6 +338,7 @@ internal sealed class ChatWindow : IDisposable
                     {
                         SetWindowTextW(_send, _strings.Send);
                         SetWindowTextW(_settings, _strings.Settings);
+                        SetWindowTextW(_mic, _strings.Talk);
                         SendMessageW(_edit, EM_SETCUEBANNER, new IntPtr(1), _strings.Placeholder);
                     }
                     return IntPtr.Zero;
@@ -310,7 +349,8 @@ internal sealed class ChatWindow : IDisposable
                     var id = LowWord(wParam);
                     if (id == IdSend) Submit();
                     else if (id == IdSettings) SettingsRequested?.Invoke();
-                    if (id is IdSend or IdSettings) SetFocus(_edit); // keep typing without clicking back
+                    else if (id == IdMic) ToggleRecording();
+                    if (id is IdSend or IdSettings or IdMic) SetFocus(_edit); // keep typing without clicking back
                     return IntPtr.Zero;
                 case WM_ERASEBKGND:
                     GetClientRect(hwnd, out var client);
@@ -331,8 +371,8 @@ internal sealed class ChatWindow : IDisposable
                     SetBkColor(wParam, _backgroundColor);
                     return _backgroundBrush;
                 case WM_ACTIVATE:
-                    // Clicking anywhere else closes it, like a menu.
-                    if (LowWord(wParam) == WA_INACTIVE) ShowWindow(_hwnd, SW_HIDE);
+                    // Clicking anywhere else closes it, like a menu (but not mid-recording: it shows that she's listening).
+                    if (LowWord(wParam) == WA_INACTIVE && !_microphone.Recording) ShowWindow(_hwnd, SW_HIDE);
                     return IntPtr.Zero;
                 case WM_CLOSE:
                     ShowWindow(_hwnd, SW_HIDE);
@@ -361,6 +401,7 @@ internal sealed class ChatWindow : IDisposable
             }
             if (message == WM_KEYDOWN && key == VK_ESCAPE)
             {
+                if (_microphone.Recording) CancelRecording();
                 HideAndRestoreFocus();
                 return IntPtr.Zero;
             }
@@ -439,15 +480,76 @@ internal sealed class ChatWindow : IDisposable
         HotkeySpec? hotkey;
         lock (_gate) hotkey = _hotkey;
         if (hotkey is null) return;
-        UnregisterHotKey(_hwnd, HotkeyId);
+        HotkeyStatusChanged?.Invoke(Register(HotkeyId, hotkey));
+    }
+
+    /// <summary>(Re)registers a global hotkey; returns "ok" or why it failed.</summary>
+    private string Register(int id, HotkeySpec hotkey)
+    {
+        UnregisterHotKey(_hwnd, id);
         var vk = VirtualKey(hotkey.Key);
         var modifiers = MOD_NOREPEAT | (hotkey.Ctrl ? MOD_CONTROL : 0) | (hotkey.Alt ? MOD_ALT : 0) | (hotkey.Shift ? MOD_SHIFT : 0);
-        var status = vk == 0
+        return vk == 0
             ? $"unknown key {hotkey.Key}"
-            : RegisterHotKey(_hwnd, HotkeyId, modifiers, vk)
+            : RegisterHotKey(_hwnd, id, modifiers, vk)
                 ? GameApi.Ok
                 : $"{hotkey} is already used by another program";
-        HotkeyStatusChanged?.Invoke(status);
+    }
+
+    // ── Voice ─────────────────────────────────────────────────────────────
+
+    private void ApplyVoiceSettings()
+    {
+        HotkeySpec? hotkey;
+        lock (_gate) hotkey = _voiceHotkey;
+        _voiceEnabled = hotkey is not null;
+        if (hotkey is null)
+        {
+            UnregisterHotKey(_hwnd, VoiceHotkeyId);
+            if (_microphone.Recording) CancelRecording();
+        }
+        ShowWindow(_mic, _voiceEnabled ? SW_SHOW : SW_HIDE);
+        Layout();
+        VoiceHotkeyStatusChanged?.Invoke(hotkey is null ? Protocol.CapOff : Register(VoiceHotkeyId, hotkey));
+    }
+
+    /// <summary>First press listens (showing the popup so the player knows), second press sends.</summary>
+    private void ToggleRecording()
+    {
+        if (_microphone.Recording)
+        {
+            StopRecording();
+            return;
+        }
+        Speaker.Stop(); // don't record her own voice
+        var error = _microphone.Start();
+        if (error is not null)
+        {
+            VoiceFailed?.Invoke(error);
+            return;
+        }
+        if (!IsWindowVisible(_hwnd)) ShowNearLilith();
+        lock (_gate) SetWindowTextW(_status, _strings.Listening);
+        SetTimer(_hwnd, (UIntPtr)VoiceTimerId, VoiceLimitMs, IntPtr.Zero);
+        InvalidateRect(_mic, IntPtr.Zero, false);
+    }
+
+    private void StopRecording()
+    {
+        KillTimer(_hwnd, (UIntPtr)VoiceTimerId);
+        var (path, error) = _microphone.Stop();
+        InvalidateRect(_mic, IntPtr.Zero, false);
+        lock (_gate) SetWindowTextW(_status, _strings.Thinking);
+        if (path is not null) VoiceRecorded?.Invoke(path);
+        else VoiceFailed?.Invoke(error ?? "the recording could not be saved");
+    }
+
+    private void CancelRecording()
+    {
+        KillTimer(_hwnd, (UIntPtr)VoiceTimerId);
+        _microphone.Cancel();
+        InvalidateRect(_mic, IntPtr.Zero, false);
+        lock (_gate) SetWindowTextW(_status, "");
     }
 
     private static uint VirtualKey(string key)
@@ -464,6 +566,7 @@ internal sealed class ChatWindow : IDisposable
         if (_hwnd != IntPtr.Zero)
         {
             UnregisterHotKey(_hwnd, HotkeyId);
+            UnregisterHotKey(_hwnd, VoiceHotkeyId);
             PostMessageW(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         }
         if (_threadId != 0) PostThreadMessageW(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);

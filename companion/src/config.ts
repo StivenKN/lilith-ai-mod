@@ -11,6 +11,7 @@ import { languageCodes } from "./languages.ts";
 import type { Log } from "./log.ts";
 import { presetIds, presets, type PresetId } from "./providers/presets.ts";
 import { searchModes } from "./search.ts";
+import { defaultVoice, sttModelIds, voiceIdsFor } from "./voice/catalog.ts";
 
 export const HotkeySchema = z.object({
   key: z.string().regex(/^(F([1-9]|1[0-9]|2[0-4])|[A-Z0-9])$/),
@@ -62,6 +63,22 @@ export const ConfigSchema = z.object({
       mode: z.enum(searchModes).default("off"),
       /** Firecrawl API key (only used in "firecrawl" mode). */
       apiKey: z.string().default(""),
+    })
+    .prefault({}),
+  voice: z
+    .object({
+      /** She reads her replies aloud in game. */
+      speak: z.boolean().default(false),
+      /** The player can talk to her: the voice hotkey (or the mic button) starts and stops recording. */
+      listen: z.boolean().default(false),
+      /** "auto" speaks her reply language when it's Spanish or English; a fixed one also makes her reply in it. */
+      language: z.enum(["auto", "es", "en"]).default("auto"),
+      esVoice: z.enum(voiceIdsFor("es")).default(defaultVoice.es),
+      enVoice: z.enum(voiceIdsFor("en")).default(defaultVoice.en),
+      speed: z.number().min(0.6).max(1.6).default(1),
+      volume: z.number().int().min(0).max(100).default(85),
+      hotkey: HotkeySchema.prefault({ key: "F8" }),
+      sttModel: z.enum(sttModelIds).default("small"),
     })
     .prefault({}),
   advanced: z
