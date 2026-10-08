@@ -251,6 +251,7 @@ const en = {
   "help.problemsOnly": "Only warnings and errors",
 
   // Dashboard: setup wizard
+  "setup.todo": "To do",
   "setup.step.game": "Install",
   "setup.step.ai": "Choose the AI",
   "setup.step.done": "Done",
@@ -552,6 +553,7 @@ const es = {
   "help.logTitle": "Registro en vivo",
   "help.problemsOnly": "Solo advertencias y errores",
 
+  "setup.todo": "Pendientes",
   "setup.step.game": "Instalar",
   "setup.step.ai": "Elegir la IA",
   "setup.step.done": "Listo",

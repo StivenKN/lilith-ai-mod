@@ -16,13 +16,17 @@ export function SetupWizard(props: { overview: Overview; refresh: () => void; on
 
   return (
     <div className="wizard">
-      <ol className="steps">
-        {steps.map((id, i) => (
-          <li key={id} data-state={i < index ? "done" : i === index ? "current" : "todo"}>
-            {tr(`setup.step.${id}`)}
-          </li>
-        ))}
-      </ol>
+      {/* The steps as the to-do note taped to Lilith's door in the game's art. */}
+      <aside className="todo">
+        <p className="todo-title">{tr("setup.todo")}</p>
+        <ol className="steps">
+          {steps.map((id, i) => (
+            <li key={id} data-state={i < index ? "done" : i === index ? "current" : "todo"} aria-current={i === index ? "step" : undefined}>
+              <span>{tr(`setup.step.${id}`)}</span>
+            </li>
+          ))}
+        </ol>
+      </aside>
       <section>
         {step === "game" && <GameStep onNext={next} />}
         {step === "ai" && (

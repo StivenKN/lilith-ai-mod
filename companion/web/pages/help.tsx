@@ -34,12 +34,14 @@ export function HelpPage(props: { overview: Overview }) {
       )}
 
       <h2>{tr("help.problemsTitle")}</h2>
-      {problems.map((id) => (
-        <details key={id} style={{ marginBottom: 10 }}>
-          <summary style={{ fontSize: 15, color: "var(--ink)" }}>{tr(`help.problem.${id}`)}</summary>
-          <p style={{ marginTop: 8 }}>{tr(`help.problem.${id}.answer`)}</p>
-        </details>
-      ))}
+      <div className="faq">
+        {problems.map((id) => (
+          <details key={id}>
+            <summary>{tr(`help.problem.${id}`)}</summary>
+            <p>{tr(`help.problem.${id}.answer`)}</p>
+          </details>
+        ))}
+      </div>
 
       <h2>{tr("help.reportTitle")}</h2>
       <p>{tr("help.reportIntro")}</p>

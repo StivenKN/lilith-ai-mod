@@ -203,8 +203,10 @@ export function ProviderForm(props: { overview: Overview; onSaved: () => void; s
           <Note tone="ok">
             <p>{tr("provider.testOk", { seconds: (test.latencyMs / 1000).toFixed(1) })}</p>
           </Note>
-          <div className="transcript" style={{ minHeight: 0 }}>
-            <Bubble text={test.text} meta={test.model} />
+          <div className="screen">
+            <div className="transcript" style={{ minHeight: 0 }}>
+              <Bubble text={test.text} meta={test.model} />
+            </div>
           </div>
         </div>
       )}
