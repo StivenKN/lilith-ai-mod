@@ -162,7 +162,6 @@ internal static class Native
     internal const uint MOD_NOREPEAT = 0x4000;
     internal const uint MONITOR_DEFAULTTONEAREST = 2;
     internal const int GCS_COMPSTR = 0x0008;
-    internal const int COLOR_WINDOW = 5;
     internal static readonly IntPtr DpiAwarenessPerMonitorV2 = new(-4);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -255,9 +254,6 @@ internal static class Native
     [DllImport("user32.dll")]
     internal static extern IntPtr LoadCursorW(IntPtr instance, IntPtr cursor);
 
-    [DllImport("user32.dll")]
-    internal static extern IntPtr GetSysColorBrush(int index);
-
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     internal static extern IntPtr GetModuleHandleW(string? moduleName);
 
@@ -278,6 +274,126 @@ internal static class Native
 
     [DllImport("imm32.dll", EntryPoint = "ImmGetCompositionStringW")]
     internal static extern int ImmGetCompositionString(IntPtr context, int index, IntPtr buffer, int length);
+
+    // ── Painting: custom-drawn controls and the frosted-glass backdrop ──
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PaintStruct
+    {
+        public IntPtr hdc;
+        public int fErase;
+        public Rect rcPaint;
+        public int fRestore;
+        public int fIncUpdate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public byte[] rgbReserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DrawItemStruct
+    {
+        public uint CtlType;
+        public uint CtlID;
+        public uint itemID;
+        public uint itemAction;
+        public uint itemState;
+        public IntPtr hwndItem;
+        public IntPtr hDC;
+        public Rect rcItem;
+        public UIntPtr itemData;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Margins
+    {
+        public int Left, Right, Top, Bottom;
+    }
+
+    internal const uint WM_PAINT = 0x000F;
+    internal const uint WM_ERASEBKGND = 0x0014;
+    internal const uint WM_DRAWITEM = 0x002B;
+    internal const uint WM_CTLCOLOREDIT = 0x0133;
+    internal const uint WM_CTLCOLORSTATIC = 0x0138;
+    internal const uint WS_CLIPCHILDREN = 0x02000000;
+    internal const uint BS_OWNERDRAW = 0x000B;
+    internal const uint ODS_SELECTED = 0x0001;
+    internal const uint DT_CENTER = 0x0001, DT_VCENTER = 0x0004, DT_SINGLELINE = 0x0020, DT_NOPREFIX = 0x0800;
+    internal const int TRANSPARENT = 1;
+    internal const int HALFTONE = 4;
+    internal const uint SRCCOPY = 0x00CC0020;
+    internal const int PS_INSIDEFRAME = 6;
+    internal const int BLACK_BRUSH = 4, NULL_PEN = 8;
+    internal const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2;
+    internal const int DWMWA_SYSTEMBACKDROP_TYPE = 38, DWMSBT_TRANSIENTWINDOW = 3; // acrylic, Windows 11 22H2+
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref Margins margins);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr BeginPaint(IntPtr hwnd, out PaintStruct paint);
+
+    [DllImport("user32.dll")]
+    internal static extern bool EndPaint(IntPtr hwnd, ref PaintStruct paint);
+
+    [DllImport("user32.dll")]
+    internal static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+
+    [DllImport("user32.dll")]
+    internal static extern int FillRect(IntPtr hdc, ref Rect rect, IntPtr brush);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int DrawTextW(IntPtr hdc, string text, int length, ref Rect rect, uint format);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateSolidBrush(uint color);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreatePen(int style, int width, uint color);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr GetStockObject(int index);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr SelectObject(IntPtr hdc, IntPtr gdiObject);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool RoundRect(IntPtr hdc, int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool Ellipse(IntPtr hdc, int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    internal static extern uint SetTextColor(IntPtr hdc, uint color);
+
+    [DllImport("gdi32.dll")]
+    internal static extern uint SetBkColor(IntPtr hdc, uint color);
+
+    [DllImport("gdi32.dll")]
+    internal static extern int SetBkMode(IntPtr hdc, int mode);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern int SetStretchBltMode(IntPtr hdc, int mode);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool SetBrushOrgEx(IntPtr hdc, int x, int y, IntPtr previous);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool StretchBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, int sourceWidth, int sourceHeight, uint rop);
+
+    /// <summary>A GDI COLORREF from a familiar 0xRRGGBB hex value.</summary>
+    internal static uint Rgb(int hex) => (uint)(((hex & 0xFF) << 16) | (hex & 0xFF00) | ((hex >> 16) & 0xFF));
 
     internal static int LowWord(IntPtr value) => (int)((long)value & 0xFFFF);
     internal static int HighWord(IntPtr value) => (int)(((long)value >> 16) & 0xFFFF);
