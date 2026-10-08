@@ -6,7 +6,7 @@ import { HelpPage } from "./pages/help.tsx";
 import { LilithPage } from "./pages/lilith.tsx";
 import { ProviderPage } from "./pages/provider.tsx";
 import { SetupWizard } from "./pages/setup.tsx";
-import { LocaleContext, useTr } from "./ui.tsx";
+import { LocaleContext, Note, useTr } from "./ui.tsx";
 import type { UiLocale } from "../src/languages.ts";
 
 const tabs = ["chat", "lilith", "ai", "game", "help"] as const;
@@ -63,6 +63,8 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
         </div>
       </header>
 
+      <UpdateBanner update={overview.update} refresh={props.refresh} />
+
       {wizard ? (
         <SetupWizard overview={overview} refresh={props.refresh} onFinish={() => setWizard(false)} />
       ) : (
@@ -84,6 +86,48 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
         </>
       )}
     </div>
+  );
+}
+
+/** New-version notice. The game's copy updates itself; the setup exe links to the release page. */
+function UpdateBanner(props: { update: Overview["update"]; refresh: () => void }) {
+  const tr = useTr();
+  const { update } = props;
+  if (update.state === "idle") return null;
+  const download = (
+    <a href={update.url} target="_blank" rel="noreferrer">
+      {tr("update.download")}
+    </a>
+  );
+  if (update.state === "installed")
+    return (
+      <Note tone="ok">
+        <p>{tr("update.installed", { version: update.version })}</p>
+      </Note>
+    );
+  if (update.state === "failed")
+    return (
+      <Note tone="warn" detail={update.detail}>
+        <p>
+          {tr("update.failed", { version: update.version })} {download}
+        </p>
+      </Note>
+    );
+  return (
+    <Note>
+      <div className="row">
+        <span>{tr("update.available", { version: update.version })}</span>
+        {update.state === "installing" ? (
+          <span className="hint">{tr("update.installing")}</span>
+        ) : update.canInstall ? (
+          <button className="secondary" onClick={() => void call("installUpdate").then(props.refresh)}>
+            {tr("update.install")}
+          </button>
+        ) : (
+          download
+        )}
+      </div>
+    </Note>
   );
 }
 

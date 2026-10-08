@@ -17,6 +17,7 @@ import { defaultPersona } from "./prompt.ts";
 import { createProvider, ProviderError } from "./providers/index.ts";
 import { listOllamaModels, ollamaVersion, pullOllamaModel } from "./providers/ollama.ts";
 import { presetIds } from "./providers/presets.ts";
+import type { Updater } from "./updater.ts";
 
 export const APP_NAME = "lilith-ai-companion";
 const PORTS = Array.from({ length: 20 }, (_, i) => 47321 + i);
@@ -29,6 +30,7 @@ export interface AppContext {
   memory: Memory;
   logger: Logger;
   brain: Brain;
+  updater: Updater;
   paths: DataPaths;
   payloadDir: string;
   /** The running exe, copied into the game on install (null when running from source). */
@@ -62,6 +64,7 @@ export function createProcedures(ctx: AppContext) {
         app: { version: ctx.version, mode: ctx.mode, dataDir: ctx.paths.root, logFile: ctx.paths.logFile, platform: process.platform },
         config: publicConfig(ctx.config.current),
         brain: snapshot,
+        update: ctx.updater.status,
         languageName: languages[snapshot.replyLanguage].native,
       };
     }),
@@ -122,6 +125,7 @@ export function createProcedures(ctx: AppContext) {
         config: ctx.config.current,
         brain: ctx.brain,
         logger: ctx.logger,
+        update: ctx.updater.status,
         gameDir: null,
       }),
     })),
@@ -130,6 +134,11 @@ export function createProcedures(ctx: AppContext) {
       const target = which === "logs" ? ctx.paths.logs : which === "data" ? ctx.paths.root : ctx.brain.snapshot().hello?.gameDir;
       if (target) ctx.openPath(target);
       return { ok: Boolean(target) };
+    }),
+
+    installUpdate: procedure(none, async () => {
+      await ctx.updater.install();
+      return ctx.updater.status;
     }),
 
     detectGame: procedure(none, async () => {
@@ -226,10 +235,12 @@ export function startServer(ctx: AppContext): DashboardServer {
           const send = (event: string, data: unknown) => controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           const stopLogs = ctx.logger.subscribe((entry) => send("log", entry));
           const stopBrain = ctx.brain.onEvent((event) => send("brain", event));
+          const stopUpdate = ctx.updater.onChange(() => send("update", ctx.updater.status));
           const ping = setInterval(() => controller.enqueue(": ping\n\n"), 20_000);
           cleanup = () => {
             stopLogs();
             stopBrain();
+            stopUpdate();
             clearInterval(ping);
           };
           request.signal.addEventListener("abort", () => {

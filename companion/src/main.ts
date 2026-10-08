@@ -13,6 +13,7 @@ import { Memory } from "./memory.ts";
 import { dataPaths } from "./paths.ts";
 import type { CompanionMessage } from "./protocol.ts";
 import { APP_NAME, startServer, type AppContext } from "./server.ts";
+import { Updater } from "./updater.ts";
 import pkg from "../package.json" with { type: "json" };
 
 const args = new Set(process.argv.slice(2));
@@ -96,6 +97,14 @@ async function main(): Promise<void> {
   });
 
   const exeDir = dirname(process.execPath);
+  // Only the copy the game launches (inside the game folder) replaces itself; the setup exe just reports new versions.
+  const updater = new Updater({
+    version: VERSION,
+    modDir: mode === "bridge" && Bun.isStandaloneExecutable ? exeDir : null,
+    downloadDir: join(paths.root, "updates"),
+    autoInstall: () => config.current.features.autoUpdate,
+    log: logger.scope("update"),
+  });
   const server = startServer({
     version: VERSION,
     mode,
@@ -103,6 +112,7 @@ async function main(): Promise<void> {
     memory,
     logger,
     brain,
+    updater,
     paths,
     payloadDir: process.env.LILITH_AI_PAYLOAD_DIR ?? join(exeDir, "payload"),
     selfExe: Bun.isStandaloneExecutable ? process.execPath : null,
@@ -111,10 +121,12 @@ async function main(): Promise<void> {
   dashboardUrl = server.loginUrl;
   await writeAtomic(paths.instance, JSON.stringify({ pid: process.pid, port: server.port, loginUrl: server.loginUrl, mode }));
   brain.start();
+  if (mode !== "dev") updater.start(mode === "setup" ? 0 : undefined);
 
   async function shutdown(code: number, reason: string): Promise<never> {
     log.info(`shutting down: ${reason}`);
     brain.stop();
+    updater.stop();
     server.stop();
     await rm(paths.instance, { force: true });
     process.exit(code);
