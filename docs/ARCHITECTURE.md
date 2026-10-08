@@ -9,6 +9,7 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
       LilithAICompanion.exe --bridge   companion/ (TypeScript on Bun, single exe)
         ├─ providers   OpenAI-compatible · Anthropic SDK · Ollama native
         ├─ brain       persona · prompt · reply shaping · paging · memory · speak-first
+        ├─ search      DuckDuckGo lite (keyless) · Firecrawl (API key)
         └─ dashboard   Bun.serve on 127.0.0.1:47321+ → React app (setup wizard, settings, help)
 
 %APPDATA%\LilithAICompanion\   config.json · memory.json · logs\lilith-ai.log
@@ -66,6 +67,11 @@ Nothing needs a restart after a settings change:
    - Timeouts are explicit: 60 s, or 180 s while a local model loads.
    - 429 and 5xx errors get one retry.
    - A 400 that names a parameter drops or renames that parameter and retries.
+   - With web search on, the prompt lets the model answer with only `[search: query]` (or
+     `[buscar: …]`). The companion runs that search (`search.ts`), shows "searching the web" in the
+     popup, and asks again with the top results in the system prompt. A failed search is logged and
+     the model is told it got nothing, so she still answers. This works with every provider because
+     it needs no tool-calling support.
 5. It shapes the reply:
    - strips `<think>` blocks, markdown, emoji and stage directions;
    - reads the `[emotion]` tag (Spanish or English);

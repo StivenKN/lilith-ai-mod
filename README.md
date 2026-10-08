@@ -20,6 +20,9 @@ answers in her own speech bubble, in character, in your language, and remembers 
 - **Speaks first** (optional) after a quiet while, never while she's asleep.
 - **Your choice of AI:** Ollama on your PC (free, private), OpenAI, Claude, Gemini, DeepSeek,
   OpenRouter, Groq, Mistral, xAI, LM Studio, or any OpenAI-compatible server.
+- **Web search** (optional). She can look up news, weather, prices and other current facts:
+  for free from your PC (DuckDuckGo, no account), or through [Firecrawl](https://www.firecrawl.dev)
+  with your API key. Turn it on in **AI → Web search**.
 - **Updates itself.** New versions install in the background and take effect the next time you
   start the game (turn it off in **Game → Installation**).
 - **Honest errors.** When something fails, she doesn't make up an excuse: the bubble says what broke
@@ -43,7 +46,8 @@ unsigned programs).
 Settings, API keys, memory and logs stay on your PC in `%APPDATA%\LilithAICompanion`. With Ollama or
 another local server nothing leaves your PC. With an online service, your message, the recent
 conversation, Lilith's persona, her notes about you, the time and your player name go to that
-service. To check for updates, the mod asks GitHub for the list of releases every few hours; nothing
+service. With web search on, only the search words she picks go to DuckDuckGo or Firecrawl, never
+your conversation. To check for updates, the mod asks GitHub for the list of releases every few hours; nothing
 about you is sent. The mod never reads your screen, windows or files.
 
 ## Uninstall

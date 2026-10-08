@@ -9,13 +9,14 @@ import { resolveLanguage, uiLocaleFor, type Language, type UiLocale } from "./la
 import type { Log, Logger } from "./log.ts";
 import { errorMessage } from "./log.ts";
 import type { Memory, StoredTurn } from "./memory.ts";
-import { avoidRepeatCue, buildSystemPrompt, defaultPersona, learnFactsPrompt, speakFirstCue } from "./prompt.ts";
+import { avoidRepeatCue, buildSystemPrompt, defaultPersona, learnFactsPrompt, speakFirstCue, type PromptContext } from "./prompt.ts";
 import { createProvider, isLocalProvider, ProviderError, type ErrorKind, type Provider } from "./providers/index.ts";
 import type { ProviderSettings } from "./providers/index.ts";
 import { isOllamaModelLoaded, warmUpOllama } from "./providers/ollama.ts";
 import { getPreset } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { isRepeat, paginate, parseReply } from "./reply.ts";
+import { createSearcher, findSearchRequest, stripSearchTags } from "./search.ts";
 
 const MAX_TOKENS = 1024;
 const RETRY_MAX_TOKENS = 4096;
@@ -242,10 +243,16 @@ export class Brain {
       const language = this.replyLanguage();
       const provider = createProvider(settings, (message) => this.#log.warn(message));
       const userTurn = input.user ?? speakFirstCue(language, Math.round(input.idleMinutes ?? 0));
-      const { text, emotion, model } = await this.#ask(provider, settings, language, [
-        ...this.options.memory.promptTurns(),
-        { role: "user", content: userTurn },
-      ]);
+      const onSearch = (query: string) => {
+        if (!speakFirst) this.options.send({ type: "chatStatus", kind: "thinking", text: tr("status.searching", { query }) });
+      };
+      const { text, emotion, model } = await this.#ask(
+        provider,
+        settings,
+        language,
+        [...this.options.memory.promptTurns(), { role: "user", content: userTurn }],
+        onSearch,
+      );
       const latencyMs = Math.round(performance.now() - started);
       const stored = await this.options.memory.addExchange(input.user, text, input.source);
       if (!stored) this.#log.info("reply was still a near-repeat; shown, but kept out of her context");
@@ -276,10 +283,21 @@ export class Brain {
     }
   }
 
-  /** Calls the model and shapes the answer, with one retry each for empty and repeated replies. */
-  async #ask(provider: Provider, settings: ProviderSettings, language: Language, turns: Parameters<Provider["chat"]>[0]["turns"]) {
+  /**
+   * Calls the model and shapes the answer. If web search is on and the model asks for one
+   * (`[search: query]`), runs it and asks again with the results. Then one retry each for
+   * empty and repeated replies.
+   */
+  async #ask(
+    provider: Provider,
+    settings: ProviderSettings,
+    language: Language,
+    turns: Parameters<Provider["chat"]>[0]["turns"],
+    onSearch: (query: string) => void = () => {},
+  ) {
     const config = this.options.config.current;
-    const system = buildSystemPrompt({
+    const searcher = createSearcher(config.search);
+    const context: PromptContext = {
       language,
       persona: config.persona.custom?.trim() || defaultPersona(language),
       now: new Date(),
@@ -287,8 +305,10 @@ export class Brain {
       state: this.#state,
       notes: this.options.memory.notes,
       maxChars: config.advanced.maxReplyChars,
-    });
-    const request = {
+      ...(searcher ? { search: { kind: "available" as const } } : {}),
+    };
+    let system = buildSystemPrompt(context);
+    let request = {
       system,
       turns,
       maxTokens: MAX_TOKENS,
@@ -297,16 +317,33 @@ export class Brain {
     };
 
     let result = await provider.chat(request);
-    let reply = parseReply(result.text, config.advanced.maxReplyChars);
+    const query = searcher ? findSearchRequest(result.text) : null;
+    if (searcher && query) {
+      onSearch(query);
+      let search: NonNullable<PromptContext["search"]>;
+      try {
+        const results = await searcher(query);
+        this.#log.info(`web search (${config.search.mode}) "${query}": ${results.length} result(s)`);
+        search = { kind: "results", query, results };
+      } catch (error) {
+        this.#log.warn(`web search (${config.search.mode}) "${query}" failed: ${this.options.logger.redact(errorMessage(error))}`);
+        search = { kind: "failed", query };
+      }
+      system = buildSystemPrompt({ ...context, search });
+      request = { ...request, system };
+      result = await provider.chat(request);
+    }
+    let reply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
     if (!reply.text) {
       this.#log.warn(`empty reply (finish: ${result.finish}, reasoning: ${result.reasoning.length} chars); retrying with a larger budget`);
       result = await provider.chat({ ...request, maxTokens: RETRY_MAX_TOKENS });
-      reply = parseReply(result.text, config.advanced.maxReplyChars);
+      reply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
       if (!reply.text) throw new ProviderError("empty_reply", `No visible text after retry (finish: ${result.finish})`);
     }
     if (isRepeat(reply.text, this.options.memory.recentReplies())) {
       this.#log.info("near-duplicate reply; asking once for something new");
-      const retry = parseReply((await provider.chat({ ...request, system: system + avoidRepeatCue(language) })).text, config.advanced.maxReplyChars);
+      const retried = await provider.chat({ ...request, system: system + avoidRepeatCue(language) });
+      const retry = parseReply(stripSearchTags(retried.text), config.advanced.maxReplyChars);
       if (retry.text) reply = retry;
     }
     this.#warm.add(warmKey(settings));
@@ -409,7 +446,8 @@ export class Brain {
   }
 
   #registerSecrets(): void {
-    for (const key of Object.values(this.options.config.current.apiKeys)) if (key) this.options.logger.addSecret(key);
+    const { apiKeys, search } = this.options.config.current;
+    for (const key of [...Object.values(apiKeys), search.apiKey]) if (key) this.options.logger.addSecret(key);
   }
 
   #emit(event: BrainEvent): void {

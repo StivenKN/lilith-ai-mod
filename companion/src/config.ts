@@ -10,6 +10,7 @@ import { basename, dirname } from "node:path";
 import { languageCodes } from "./languages.ts";
 import type { Log } from "./log.ts";
 import { presetIds, presets, type PresetId } from "./providers/presets.ts";
+import { searchModes } from "./search.ts";
 
 export const HotkeySchema = z.object({
   key: z.string().regex(/^(F([1-9]|1[0-9]|2[0-4])|[A-Z0-9])$/),
@@ -51,6 +52,14 @@ export const ConfigSchema = z.object({
       autoUpdate: z.boolean().default(true),
     })
     .prefault({}),
+  /** Web search Lilith can use for current information. Off until the player picks a backend. */
+  search: z
+    .object({
+      mode: z.enum(searchModes).default("off"),
+      /** Firecrawl API key (only used in "firecrawl" mode). */
+      apiKey: z.string().default(""),
+    })
+    .prefault({}),
   advanced: z
     .object({
       /** null = automatic (60 s cloud, 180 s first local load then 60 s). */
@@ -79,7 +88,7 @@ export const maskSecret = (value: string): string => (value.length <= 4 ? "â€¢â€
 /** Config as shown in the dashboard and diagnostic reports: keys masked, never sent in full. */
 export function publicConfig(config: Config) {
   const apiKeys = Object.fromEntries(Object.entries(config.apiKeys).map(([id, key]) => [id, key ? maskSecret(key) : ""]));
-  return { ...config, apiKeys };
+  return { ...config, apiKeys, search: { ...config.search, apiKey: config.search.apiKey ? maskSecret(config.search.apiKey) : "" } };
 }
 
 export class ConfigStore {
