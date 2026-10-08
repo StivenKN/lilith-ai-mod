@@ -82,6 +82,10 @@ internal static class GameApi
             _ = ReadPlayerName();
             return null;
         });
+        Caps["card"] = Check(() =>
+            !HasMethod(typeof(NoteImageSaver), "SaveNote", typeof(string), typeof(bool)) ? "NoteImageSaver.SaveNote(string, bool) not found"
+            : !HasMethod(typeof(NoteInbox), "NotifySaved") ? "NoteInbox.NotifySaved() not found"
+            : null);
     }
 
     private static string Check(Func<string?> probe)
@@ -121,6 +125,32 @@ internal static class GameApi
         {
             return Describe(error);
         }
+    }
+
+    /// <summary>
+    /// Leaves a card in the game's own note inbox, drawn like the notes Lilith writes herself.
+    /// Returns null on success, or the reason it failed. A badge that doesn't light up still counts
+    /// as delivered: the note is already in the inbox.
+    /// </summary>
+    public static string? LeaveCard(string text)
+    {
+        try
+        {
+            SaveNote(text);
+        }
+        catch (Exception error)
+        {
+            return Describe(error);
+        }
+        try
+        {
+            NotifyInbox();
+        }
+        catch (Exception error)
+        {
+            Plugin.Instance?.Write("warn", $"card saved, but the inbox badge didn't update: {Describe(error)}");
+        }
+        return null;
     }
 
     public static bool IsBusy()
@@ -174,6 +204,13 @@ internal static class GameApi
         var manager = DialogueManager.instance ?? throw new NullReferenceException("DialogueManager.instance");
         return manager.ForceSay(text, emotion, seconds);
     }
+
+    // `false` is what the community mods that proved this call pass; what `true` does is unknown.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void SaveNote(string text) => NoteImageSaver.SaveNote(text, false);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void NotifyInbox() => NoteInbox.NotifySaved();
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool BusyPrimary() => DialogueManager.instance?.IsBusyOrAwaitingResponse ?? false;

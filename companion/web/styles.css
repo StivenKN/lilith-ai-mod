@@ -384,7 +384,8 @@ input[type="radio"]:checked {
 button.primary,
 button.secondary,
 button.quiet,
-a.button {
+a.button,
+label.button {
   font: inherit;
   font-size: 15px;
   font-weight: 700;
@@ -409,19 +410,22 @@ button.primary:hover:not(:disabled) {
   background: var(--ribbon-deep);
 }
 button.secondary,
-a.button {
+a.button,
+label.button {
   background: #ffffff;
   color: var(--ink);
   box-shadow: var(--lift);
 }
 button.secondary:hover:not(:disabled),
-a.button:hover {
+a.button:hover,
+label.button:hover:not([aria-disabled="true"]) {
   background: var(--wall);
 }
 /* Pressed like a key: the button sinks onto its shadow. */
 button.primary:active:not(:disabled),
 button.secondary:active:not(:disabled),
-a.button:active {
+a.button:active,
+label.button:active:not([aria-disabled="true"]) {
   transform: translateY(2px);
   box-shadow: 0 1px 0 var(--ink);
 }
@@ -1060,4 +1064,69 @@ details pre {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ── Cards and keepsakes ───────────────────────────────── */
+
+label.button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: progress;
+}
+.keepsakes {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+.keepsake {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px;
+  background: #ffffff;
+  border: 2px solid var(--wall-deep);
+  border-radius: 16px;
+}
+.keepsake img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+}
+.keepsake textarea {
+  min-height: 64px;
+  margin-top: 4px;
+}
+.keepsake-note {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.keepsake button {
+  justify-self: start;
+}
+.cards {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: grid;
+  gap: 16px;
+}
+/* Her handwriting on ruled note paper, like the cards in the game's inbox. The rule spacing
+   equals the line height and starts at the top padding, so each line of text sits on a rule. */
+.card-paper {
+  margin: 0 0 6px;
+  padding: 14px 20px;
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 28px;
+  color: var(--ink);
+  background-color: #fffdf7;
+  background-image: repeating-linear-gradient(transparent 0 27px, #d9cfe8 27px 28px);
+  background-position: 0 14px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px #00000022;
+  rotate: -0.4deg;
 }

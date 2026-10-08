@@ -8,7 +8,7 @@ import { computerTools, toolSchema } from "../computer/actions.ts";
 import { bgraToPng } from "../computer/png.ts";
 import { isLocalUrl, type Preset } from "./presets.ts";
 import { awaitWithAbort, requestJson, toolsUnsupported, trimSlash, withRetry, type HttpOptions } from "./http.ts";
-import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type Provider, type ToolCall } from "./types.ts";
+import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
 
 const AssistantMessage = z.looseObject({
   content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }))]).nullish(),
@@ -68,7 +68,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
         : (options.preset.maxTokensField ?? "max_tokens");
     const body: Record<string, unknown> = {
       model: options.model,
-      messages: [{ role: "system", content: request.system }, ...normalizeTurns(request.turns)],
+      messages: [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(toMessage)],
       stream: false,
       [tokensField]: request.maxTokens,
       temperature: request.temperature,
@@ -224,6 +224,18 @@ function visionProbe() {
   }
   return { image: bgraToPng(pixels, 64, 32), answer: `${left.name} ${right.name}` };
 }
+
+/** Pictures go as content parts with data URLs; plain turns stay plain strings for older servers. */
+const toMessage = ({ role, content, images }: ChatTurn) =>
+  images?.length
+    ? {
+        role,
+        content: [
+          { type: "text", text: content },
+          ...images.map((image) => ({ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } })),
+        ],
+      }
+    : { role, content };
 
 function parseCompletion(json: unknown, model: string): ChatResult {
   const parsed = ChatCompletion.safeParse(json);

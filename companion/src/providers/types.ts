@@ -4,6 +4,14 @@ import type { HttpOptions } from "./http.ts";
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
+  /** Pictures attached to a user turn, for models that can see. Each adapter sends its own format. */
+  images?: readonly ImageInput[];
+}
+
+/** A picture as base64 JPEG (the dashboard re-encodes everything it uploads to JPEG). */
+export interface ImageInput {
+  mediaType: "image/jpeg";
+  data: string;
 }
 
 export interface ChatRequest {
@@ -114,9 +122,12 @@ export function normalizeTurns(turns: readonly ChatTurn[]): ChatTurn[] {
   for (const turn of turns) {
     const content = turn.content.trim();
     if (!content) continue;
+    const images = turn.images ?? [];
     const last = out.at(-1);
-    if (last?.role === turn.role) last.content = `${last.content}\n${content}`;
-    else out.push({ role: turn.role, content });
+    if (last?.role === turn.role) {
+      last.content = `${last.content}\n${content}`;
+      if (images.length > 0) last.images = [...(last.images ?? []), ...images];
+    } else out.push({ role: turn.role, content, ...(images.length > 0 ? { images } : {}) });
   }
   while (out[0]?.role === "assistant") out.shift();
   return out;

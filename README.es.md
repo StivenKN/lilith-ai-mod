@@ -17,6 +17,10 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
   panel, los mensajes del juego y esta guía están en español. Responde en el idioma del juego (12
   idiomas) o en el que elijas.
 - **Memoria.** Sigue la conversación y guarda datos sobre ti que puedes leer, editar y borrar.
+- **Tarjetas de Lilith.** Te deja tarjetas escritas a mano en la bandeja de notas del propio juego,
+  como mucho una al día, sobre lo que han hablado y lo que decidas compartirle: notas, y fotos que
+  eliges de tu PC en la pestaña **Tarjetas** del panel. Reacciona en su globo cuando le compartes
+  algo, y puedes pedirle una tarjeta cuando quieras.
 - **Habla por iniciativa propia** (opcional) cuando llevan un rato sin hablar, nunca mientras duerme.
 - **La IA que prefieras:** Ollama en tu PC (gratis y privado), OpenAI, Claude, Gemini, DeepSeek,
   OpenRouter, Groq, Mistral, xAI, LM Studio o cualquier servidor compatible con OpenAI.
@@ -75,8 +79,8 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
   `%APPDATA%\LilithAICompanion`.
 - Con Ollama u otro servidor en este PC, nada sale de tu PC. Un servidor en tu red local recibe los datos por esa red.
 - Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente, la
-  personalidad de Lilith, las notas sobre ti, la hora y tu nombre de jugador. Tu clave solo se envía a
-  ese servicio.
+  personalidad de Lilith, las notas sobre ti, lo que le compartes para sus tarjetas, la hora y tu
+  nombre de jugador. Tu clave solo se envía a ese servicio.
 - Con la búsqueda en internet activada, solo se envían a DuckDuckGo o Firecrawl las palabras que
   ella elige buscar, nunca tu conversación.
 - Para buscar actualizaciones, el mod le pide a GitHub la lista de versiones cada pocas horas; no
@@ -90,6 +94,11 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
   presiona una tecla para detenerla. El prompt le indica que pregunte antes de comprar, enviar
   mensajes, borrar, ingresar contraseñas o aceptar términos. El código bloquea la entrada de
   teclado en terminales y herramientas del sistema.
+- Las fotos que compartes para sus tarjetas son los únicos archivos que el mod lee para ellas, y solo
+  las que tú eliges. Tu navegador las achica y las vuelve a codificar antes de guardarlas, lo que
+  también les quita datos ocultos como la ubicación GPS. Con una IA en línea, cada foto se envía una
+  sola vez para que pueda verla; después, las tarjetas usan la breve descripción que ella escribió y
+  tu comentario. **Quitar** borra la foto de tu PC.
 
 ## Si algo falla
 

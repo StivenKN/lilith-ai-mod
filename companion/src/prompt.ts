@@ -1,9 +1,11 @@
-// Builds the system prompt: persona (editable) + live context + reply format rules (fixed).
+// Builds the system prompts: persona (editable) + live context + format rules (fixed), for chat
+// replies and for the handwritten cards she leaves in the game's inbox.
 // The format rules stay outside the persona so a user's persona edits can't break parsing.
 // Spanish gets everything written natively; other languages use English plus "reply in X".
 
 import esPersona from "../persona/es.md" with { type: "text" };
 import enPersona from "../persona/en.md" with { type: "text" };
+import type { Keepsake } from "./keepsakes.ts";
 import { languages, type Language } from "./languages.ts";
 import type { GameState } from "./protocol.ts";
 import type { SearchResult } from "./search.ts";
@@ -59,7 +61,8 @@ function describeState(state: GameState | null, es: boolean): string | null {
   return es ? "tranquila en el escritorio" : "relaxing on the desktop";
 }
 
-export function buildSystemPrompt(context: PromptContext): string {
+/** Persona plus what she knows right now: time, the player's name, her state, notes. */
+function personaAndContext(context: Omit<PromptContext, "maxChars">): string[] {
   const es = context.language === "es";
   const lines: string[] = [context.persona.trim(), ""];
 
@@ -77,7 +80,12 @@ export function buildSystemPrompt(context: PromptContext): string {
     for (const note of context.notes) lines.push(`  - ${note}`);
   }
   lines.push("");
+  return lines;
+}
 
+export function buildSystemPrompt(context: PromptContext): string {
+  const es = context.language === "es";
+  const lines = personaAndContext(context);
   if (es) {
     lines.push(
       "Formato de respuesta (obligatorio):",
@@ -185,3 +193,87 @@ export function learnFactsPrompt(language: Language, known: readonly string[]): 
     .filter(Boolean)
     .join("\n");
 }
+
+// ── Keepsakes and cards ────────────────────────────────────────────────────────
+
+/** Longest card she may write; the game renders it on a small note image. */
+export const CARD_MAX_CHARS = 360;
+
+/** One keepsake, described for the model the way the player shared it. */
+export function describeKeepsake(keepsake: Keepsake, language: Language): string {
+  const es = language === "es";
+  if (keepsake.kind === "note") return es ? `una nota suya: «${keepsake.text}»` : `a note from them: "${keepsake.text}"`;
+  const parts = [es ? "una foto que te mostró" : "a picture they showed you"];
+  if (keepsake.seen) parts.push(es ? `(se ve: ${keepsake.seen})` : `(it shows: ${keepsake.seen})`);
+  if (keepsake.caption) parts.push(es ? `y te dijo: «${keepsake.caption}»` : `and they said: "${keepsake.caption}"`);
+  if (!keepsake.seen && !keepsake.caption) parts.push(es ? "(no alcanzas a ver qué muestra)" : "(you can't quite make out what it shows)");
+  return parts.join(" ");
+}
+
+/** Stand-in user turn when the player shares keepsakes from the dashboard, so she reacts in her bubble. */
+export function keepsakeCue(language: Language, keepsakes: readonly Keepsake[]): string {
+  const items = keepsakes.map((keepsake) => describeKeepsake(keepsake, language)).join("; ");
+  return language === "es"
+    ? `[Tu anfitrión acaba de compartir contigo, para que lo guardes: ${items}. Reacciona breve y con naturalidad, como si te lo mostrara en persona. Si no sabes qué muestra una foto, pregúntale.]`
+    : `[Your host just shared this with you to keep: ${items}. React briefly and naturally, as if they showed it to you in person. If you can't tell what a picture shows, ask them.]`;
+}
+
+export interface CardContext extends Omit<PromptContext, "maxChars"> {
+  /** What this card is about, if the player shared anything. */
+  keepsake: Keepsake | null;
+  /** Their recent messages, oldest first, so the card can echo what they talked about. */
+  recentMessages: readonly string[];
+  /** Cards she already wrote, newest first, so she doesn't repeat herself. */
+  previousCards: readonly string[];
+}
+
+/**
+ * System prompt and the single user turn for writing a card. The rules keep it personal without
+ * being unsettling: she only speaks of what was shared with her, as something shown or told.
+ */
+export function buildCardPrompt(context: CardContext): { system: string; user: string } {
+  const es = context.language === "es";
+  const lines = personaAndContext(context);
+  if (es) {
+    lines.push(
+      "Ahora no hablas en el globo de diálogo: vas a escribir a mano una tarjeta corta que tu anfitrión encontrará en su bandeja de notas.",
+      "Reglas de la tarjeta (obligatorias):",
+      "- Escribe en español latinoamericano, cálida y natural, con tu personalidad.",
+      `- Entre 2 y 4 frases, menos de ${CARD_MAX_CHARS} caracteres. Solo texto plano: sin markdown, sin emojis, sin acciones entre asteriscos.`,
+      "- Habla de lo que te compartió como algo que te mostró o te contó. Nunca digas que revisaste, buscaste o guardaste archivos, y no menciones IA, memoria ni datos.",
+      "- No inventes hechos nuevos sobre su vida ni repitas datos sensibles.",
+      "- Sin presión ni culpa: no le pidas que pase más tiempo contigo.",
+      "- Sin etiqueta de emoción. Firma al final con «— Lilith».",
+    );
+  } else {
+    lines.push(
+      "You are not speaking in the bubble now: you are handwriting a short card your host will find in their note inbox.",
+      "Card rules (mandatory):",
+      `- Write in ${languages[context.language].english}, warm and natural, in your own voice.`,
+      `- 2 to 4 sentences, under ${CARD_MAX_CHARS} characters. Plain text only: no markdown, no emoji, no actions in asterisks.`,
+      "- Speak of what they shared as something they showed or told you. Never say you looked through, searched or stored files, and don't mention AI, memory or data.",
+      "- Don't invent new facts about their life or repeat sensitive details.",
+      "- No pressure or guilt: don't ask them to spend more time with you.",
+      "- No emotion tag. Sign off at the end with \"— Lilith\".",
+    );
+  }
+
+  const user: string[] = [es ? "Escribe la tarjeta." : "Write the card."];
+  if (context.keepsake) user.push(es ? `Esta vez, inspírate en ${describeKeepsake(context.keepsake, "es")}.` : `This time, draw on ${describeKeepsake(context.keepsake, context.language)}.`);
+  else user.push(es ? "Inspírate en lo que conversaron últimamente o en el momento del día." : "Draw on what you've talked about lately, or on the time of day.");
+  if (context.recentMessages.length > 0) {
+    user.push(es ? "Lo último que te dijo:" : "What they said to you lately:", ...context.recentMessages.map((message) => `- ${message}`));
+  }
+  if (context.previousCards.length > 0) {
+    user.push(es ? "Tarjetas que ya le escribiste (no las repitas):" : "Cards you already wrote them (don't repeat these):", ...context.previousCards.map((card) => `- ${card}`));
+  }
+  return { system: lines.join("\n"), user: user.join("\n") };
+}
+
+/** Prompt for the one-time look at a shared picture; the answer is stored and reused by every card. */
+export const describePicturePrompt = (language: Language): string =>
+  [
+    "Describe this picture in one short, factual sentence: what it shows, and the mood if it's clear.",
+    "Don't guess names, places or anything you can't see, and don't read out personal text such as addresses or numbers.",
+    `Write in ${languages[language].english}. Write nothing else.`,
+  ].join("\n");

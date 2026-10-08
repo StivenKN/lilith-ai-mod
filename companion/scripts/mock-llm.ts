@@ -23,11 +23,18 @@ const replies = {
 let turn = 0;
 
 const reply = (system: string, user: string) => {
+  const es = /español/i.test(system);
+  if (system.startsWith("Describe this picture")) return "A grey cat asleep on a keyboard.";
+  if (/Reglas de la tarjeta|Card rules/.test(system)) {
+    return es
+      ? "Me acordé de lo que me mostraste y no pude dejar de sonreír. Gracias por compartirlo conmigo. — Lilith"
+      : "I kept thinking about what you showed me, and it made me smile. Thank you for sharing it with me. — Lilith";
+  }
   const searchAllowed = /\[(search|buscar): /.test(system);
   const topResult = /^1\. (.+)$/m.exec(system)?.[1];
   if (topResult) return `[happy] I looked it up: ${topResult.slice(0, 160)}`;
   if (searchAllowed && user.startsWith("?")) return `[search: ${user.slice(1).trim()}]`;
-  const list = /español/i.test(system) ? replies.es : replies.en;
+  const list = es ? replies.es : replies.en;
   return list[turn++ % list.length]!;
 };
 

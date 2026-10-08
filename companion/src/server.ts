@@ -11,6 +11,7 @@ import { buildReport } from "./diagnostics.ts";
 import { findGameDirs, inspectGame, install, payloadStatus, steamRoots, uninstall } from "./installer.ts";
 import { languages } from "./languages.ts";
 import { errorMessage, type Logger } from "./log.ts";
+import { MAX_PICTURE_BYTES, type Keepsake, type Keepsakes } from "./keepsakes.ts";
 import type { Memory } from "./memory.ts";
 import type { DataPaths } from "./paths.ts";
 import { defaultPersona } from "./prompt.ts";
@@ -29,6 +30,7 @@ export interface AppContext {
   mode: "setup" | "bridge" | "dev";
   config: ConfigStore;
   memory: Memory;
+  keepsakes: Keepsakes;
   logger: Logger;
   brain: Brain;
   updater: Updater;
@@ -38,6 +40,12 @@ export interface AppContext {
   selfExe: string | null;
   openPath: (path: string) => void;
 }
+
+/** Keepsakes as the dashboard sees them: pictures carry the URL of their (authenticated) image. */
+const forDashboard = (keepsake: Keepsake) =>
+  keepsake.kind === "picture" ? { ...keepsake, url: `/api/pictures/${keepsake.id}.jpg` } : keepsake;
+/** Base64 JPEG from the dashboard; the length cap keeps a runaway upload from reaching the disk. */
+const PictureUpload = z.base64().max(Math.ceil((MAX_PICTURE_BYTES * 4) / 3) + 4);
 
 const procedure = <S extends z.ZodType, R>(input: S, run: (input: z.output<S>) => Promise<R>) => ({ input, run });
 const none = z.object({}).optional();
@@ -136,6 +144,32 @@ export function createProcedures(ctx: AppContext) {
       await ctx.memory.setNotes(notes);
       return ctx.memory.notes;
     }),
+
+    keepsakes: procedure(none, async () => ({
+      keepsakes: ctx.keepsakes.list.map(forDashboard),
+      cards: ctx.keepsakes.cards,
+      canLeaveCards: ctx.brain.canLeaveCards,
+    })),
+
+    shareNote: procedure(z.object({ text: z.string().trim().min(1).max(500) }), async ({ text }) => forDashboard(await ctx.brain.shareNote(text))),
+
+    sharePictures: procedure(z.object({ pictures: z.array(PictureUpload).min(1).max(12) }), async ({ pictures }) => {
+      const shared = await ctx.brain.sharePictures(pictures.map((data) => Buffer.from(data, "base64")));
+      log.info(`${shared.length} picture(s) shared`);
+      return shared.map(forDashboard);
+    }),
+
+    captionPicture: procedure(z.object({ id: z.string(), caption: z.string().max(300) }), async ({ id, caption }) => {
+      const picture = await ctx.keepsakes.describe(id, { caption });
+      return picture ? forDashboard(picture) : null;
+    }),
+
+    removeKeepsake: procedure(z.object({ id: z.string() }), async ({ id }) => {
+      await ctx.keepsakes.remove(id);
+      return { ok: true };
+    }),
+
+    writeCard: procedure(none, async () => ctx.brain.writeCard("manual")),
 
     persona: procedure(none, async () => {
       const language = ctx.brain.replyLanguage();
@@ -255,6 +289,14 @@ export function startServer(ctx: AppContext): DashboardServer {
           return Response.json({ error: ctx.logger.redact(errorMessage(error)) }, { status: 500 });
         }
       },
+    },
+    // Only ids of stored pictures resolve, so nothing outside the keepsakes folder can be served.
+    "/api/pictures/:file": async (request: Request & { params: { file: string } }) => {
+      if (!authed(request)) return deny(request);
+      const keepsake = ctx.keepsakes.get(request.params.file.replace(/\.jpg$/, ""));
+      const bytes = keepsake?.kind === "picture" ? await ctx.keepsakes.readPicture(keepsake).catch(() => null) : null;
+      if (!bytes) return new Response("Not found", { status: 404 });
+      return new Response(new Uint8Array(bytes), { headers: { "content-type": "image/jpeg", "cache-control": "private, max-age=31536000, immutable" } });
     },
     "/api/events": (request: Request) => {
       if (!authed(request)) return deny(request);

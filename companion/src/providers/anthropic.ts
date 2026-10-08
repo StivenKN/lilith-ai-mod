@@ -6,7 +6,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessageParam, BetaToolUnion, BetaToolResultBlockParam, BetaTextBlockParam, BetaImageBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { computerTools, toolSchema } from "../computer/actions.ts";
 import { classifyStatus, toolsUnsupported, trimSlash } from "./http.ts";
-import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type Provider, type ToolCall } from "./types.ts";
+import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
 
 const FALLBACK_MODELS = /^claude-(fable-5-1|opus-5-5|opus-5|sonnet-5-5)$/;
 const EFFORT_MODELS = /^claude-(fable|mythos|opus-(4-[5-9]|5)|sonnet-(4-6|5))/;
@@ -40,7 +40,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
               model: options.model,
               max_tokens: request.maxTokens,
               system: request.system,
-              messages: normalizeTurns(request.turns),
+              messages: normalizeTurns(request.turns).map(toMessage),
               ...(useEffort ? { output_config: { effort: "low" as const } } : {}),
               ...(useFallbacks ? { fallbacks: "default" as const, betas: ["server-side-fallback-2026-07-01"] } : {}),
             },
@@ -91,7 +91,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
     },
 
     agent(request) {
-      const messages: BetaMessageParam[] = normalizeTurns(request.turns);
+      const messages: BetaMessageParam[] = normalizeTurns(request.turns).map(toMessage);
       let pending: ToolCall[] = [];
       return {
         async next(results, http) {
@@ -147,6 +147,18 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
     },
   };
 }
+
+/** Pictures go first as base64 image blocks, as Anthropic recommends. */
+const toMessage = ({ role, content, images }: ChatTurn): BetaMessageParam =>
+  images?.length
+    ? {
+        role,
+        content: [
+          ...images.map((image) => ({ type: "image" as const, source: { type: "base64" as const, media_type: image.mediaType, data: image.data } })),
+          { type: "text" as const, text: content },
+        ],
+      }
+    : { role, content };
 
 function toProviderError(error: unknown): ProviderError {
   if (error instanceof ProviderError) return error;

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { call, useRpc, useServerEvents, type Output } from "./api.ts";
+import { CardsPage } from "./pages/cards.tsx";
 import { ChatPage } from "./pages/chat.tsx";
 import { GamePage } from "./pages/game.tsx";
 import { HelpPage } from "./pages/help.tsx";
@@ -9,7 +10,7 @@ import { SetupWizard } from "./pages/setup.tsx";
 import { LocaleContext, Note, useTr } from "./ui.tsx";
 import type { UiLocale } from "../src/languages.ts";
 
-const tabs = ["chat", "lilith", "ai", "game", "help"] as const;
+const tabs = ["chat", "lilith", "cards", "ai", "game", "help"] as const;
 type Tab = (typeof tabs)[number];
 export type Overview = Output<"overview">;
 
@@ -86,6 +87,7 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
           <>
             {tab === "chat" && <ChatPage overview={overview} tick={props.tick} />}
             {tab === "lilith" && <LilithPage overview={overview} refresh={props.refresh} />}
+            {tab === "cards" && <CardsPage overview={overview} refresh={props.refresh} tick={props.tick} />}
             {tab === "ai" && <ProviderPage overview={overview} refresh={props.refresh} />}
             {tab === "game" && <GamePage overview={overview} refresh={props.refresh} openWizard={() => setWizard(true)} />}
             {tab === "help" && <HelpPage overview={overview} />}

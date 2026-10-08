@@ -30,6 +30,7 @@ internal sealed record ReadyMessage(int V, string Version, string DashboardUrl, 
 internal sealed record SayMessage(string Id, string Text, string Emotion, float Seconds) : Incoming;
 internal sealed record ChatStatusMessage(string Kind, string? Text) : Incoming;
 internal sealed record YieldFocusMessage : Incoming;
+internal sealed record CardMessage(string Id, string Text) : Incoming;
 
 internal static class Protocol
 {
@@ -100,6 +101,8 @@ internal static class Protocol
                         root.GetProperty("text").GetString() ?? "",
                         root.GetProperty("emotion").GetString() ?? "neutral",
                         root.GetProperty("seconds").GetSingle());
+                case "card":
+                    return new CardMessage(root.GetProperty("id").GetString() ?? "", root.GetProperty("text").GetString() ?? "");
                 case "chatStatus":
                     return new ChatStatusMessage(
                         root.GetProperty("kind").GetString() ?? "idle",

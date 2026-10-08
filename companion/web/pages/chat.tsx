@@ -53,7 +53,13 @@ export function ChatPage(props: { overview: Overview; tick: number }) {
             ) : (
               <div key={index} className="said">
                 {turn.content}
-                <small>{turn.source === "game" ? `${time(turn.at)}, ${tr("chat.fromGame")}` : time(turn.at)}</small>
+                <small>
+                  {turn.source === "game"
+                    ? `${time(turn.at)}, ${tr("chat.fromGame")}`
+                    : turn.source === "keepsake"
+                      ? `${time(turn.at)}, ${tr("chat.shared")}`
+                      : time(turn.at)}
+                </small>
               </div>
             ),
           )}

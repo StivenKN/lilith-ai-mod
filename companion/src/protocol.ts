@@ -4,6 +4,8 @@
 // Keep in sync with plugin/src/Protocol.cs. Bump PROTOCOL_VERSION on breaking changes.
 // Startup order: the plugin sends `state` then `hello`; the companion answers `ready` (and sends
 // `ready` again whenever settings or the game language change).
+// `say` and `card` are both answered with `result{id}`. Adding a message an older plugin ignores
+// (as `card` was) doesn't need a version bump; the capability list tells which plugin can show it.
 
 import { z } from "zod";
 
@@ -24,6 +26,7 @@ export const capabilityNames = [
   "tray",
   "hotkey",
   "chatWindow",
+  "card",
 ] as const;
 export type CapabilityName = (typeof capabilityNames)[number];
 
@@ -79,4 +82,6 @@ export type CompanionMessage =
       strings: PluginStrings;
     }
   | { type: "say"; id: string; text: string; emotion: Emotion; seconds: number }
+  /** A handwritten card for the game's own note inbox. Sent only when the plugin reports `card: ok`. */
+  | { type: "card"; id: string; text: string }
   | { type: "chatStatus"; kind: "idle" | "thinking" | "error"; text?: string };
