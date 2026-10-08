@@ -236,11 +236,13 @@ export function startServer(ctx: AppContext): DashboardServer {
           const stopLogs = ctx.logger.subscribe((entry) => send("log", entry));
           const stopBrain = ctx.brain.onEvent((event) => send("brain", event));
           const stopUpdate = ctx.updater.onChange(() => send("update", ctx.updater.status));
+          const stopConfig = ctx.config.onChange(() => send("config", null));
           const ping = setInterval(() => controller.enqueue(": ping\n\n"), 20_000);
           cleanup = () => {
             stopLogs();
             stopBrain();
             stopUpdate();
+            stopConfig();
             clearInterval(ping);
           };
           request.signal.addEventListener("abort", () => {

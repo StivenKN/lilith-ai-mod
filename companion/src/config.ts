@@ -1,10 +1,14 @@
 // User settings: one Zod schema is the source of truth for defaults, validation and types.
-// Stored as %APPDATA%\LilithAICompanion\config.json and written atomically.
+// Stored as %APPDATA%\LilithAICompanion\config.json and written atomically. The file is watched,
+// so a change saved by another running copy (the setup exe and the game's copy can both be open)
+// or by hand applies live, without restarting anything.
 
 import { z } from "zod";
+import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { languageCodes } from "./languages.ts";
+import type { Log } from "./log.ts";
 import { presetIds, presets, type PresetId } from "./providers/presets.ts";
 
 export const HotkeySchema = z.object({
@@ -80,13 +84,19 @@ export function publicConfig(config: Config) {
 
 export class ConfigStore {
   #config: Config;
+  /** What's on disk as of our last read or write, to tell our own saves from someone else's. */
+  #savedText: string | null = null;
   #listeners = new Set<(config: Config) => void>();
+  #watcher: FSWatcher | null = null;
+  #reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor(
     readonly path: string,
     config: Config,
+    savedText: string | null = null,
   ) {
     this.#config = config;
+    this.#savedText = savedText;
   }
 
   /** Loads the file, falling back to defaults (and keeping a backup) if it's missing or invalid. */
@@ -95,7 +105,7 @@ export class ConfigStore {
     if (text === null) return new ConfigStore(path, defaultConfig());
     try {
       const parsed = ConfigSchema.safeParse(JSON.parse(text));
-      if (parsed.success) return new ConfigStore(path, parsed.data);
+      if (parsed.success) return new ConfigStore(path, parsed.data, text);
       onWarning(`config.json is invalid (${z.prettifyError(parsed.error)}); using defaults and keeping a backup`);
     } catch (error) {
       onWarning(`config.json could not be read (${String(error)}); using defaults and keeping a backup`);
@@ -117,10 +127,54 @@ export class ConfigStore {
         isPlainObject(value) && isPlainObject(previous) ? { ...previous, ...value } : value;
     }
     const next = ConfigSchema.parse(merged);
-    await writeAtomic(this.path, `${JSON.stringify(next, null, 2)}\n`);
+    const text = `${JSON.stringify(next, null, 2)}\n`;
+    this.#savedText = text;
+    await writeAtomic(this.path, text);
+    this.#apply(next);
+    return next;
+  }
+
+  /**
+   * Reloads the file when something else changes it. Invalid contents (say, a half-finished hand
+   * edit) are reported and ignored until fixed. Watches the folder, not the file: atomic saves
+   * replace the file, which would end a watch on the file itself.
+   */
+  async watch(log: Pick<Log, "info" | "warn">): Promise<void> {
+    if (this.#watcher) return;
+    await mkdir(dirname(this.path), { recursive: true });
+    const name = basename(this.path);
+    this.#watcher = watch(dirname(this.path), (_event, file) => {
+      if (file !== null && file !== name) return;
+      // Editors and atomic renames fire several events per save; settle first.
+      if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
+      this.#reloadTimer = setTimeout(() => void this.#reload(log), 150);
+    });
+    this.#watcher.on("error", (error) => log.warn(`stopped watching config.json: ${String(error)}`));
+  }
+
+  close(): void {
+    if (this.#reloadTimer) clearTimeout(this.#reloadTimer);
+    this.#watcher?.close();
+    this.#watcher = null;
+  }
+
+  async #reload(log: Pick<Log, "info" | "warn">): Promise<void> {
+    const text = await readTextFile(this.path).catch(() => null);
+    if (text === null || text === this.#savedText) return;
+    this.#savedText = text;
+    try {
+      const parsed = ConfigSchema.safeParse(JSON.parse(text));
+      if (!parsed.success) return log.warn(`config.json changed but is invalid (${z.prettifyError(parsed.error)}); keeping the current settings`);
+      log.info("config.json changed on disk; settings applied");
+      this.#apply(parsed.data);
+    } catch (error) {
+      log.warn(`config.json changed but could not be read (${String(error)}); keeping the current settings`);
+    }
+  }
+
+  #apply(next: Config): void {
     this.#config = next;
     for (const listener of this.#listeners) listener(next);
-    return next;
   }
 
   onChange(listener: (config: Config) => void): () => void {
