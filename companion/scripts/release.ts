@@ -20,6 +20,7 @@ import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
+import { checksumLine } from "../src/updater.ts";
 import { extractBepInEx, fetchPinned, run, UNITY_LIBS } from "./pinned.ts";
 
 const { values } = parseArgs({
@@ -101,7 +102,8 @@ await writeFile(
     "3. Follow the steps in your browser: install the mod and choose the AI (free Ollama on your PC, or an online service).",
     "4. Start the game from Steam (the first launch takes 1–3 minutes) and press **F7** to talk to Lilith.",
     "",
-    `SHA-256 \`${name}.zip\`: \`${zipHash}\``,
+    // The in-app updater reads this line to verify downloads.
+    checksumLine(version, zipHash),
     "",
   ].join("\n"),
 );

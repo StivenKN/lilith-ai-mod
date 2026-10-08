@@ -20,6 +20,8 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
 - **Habla por iniciativa propia** (opcional) cuando llevan un rato sin hablar, nunca mientras duerme.
 - **La IA que prefieras:** Ollama en tu PC (gratis y privado), OpenAI, Claude, Gemini, DeepSeek,
   OpenRouter, Groq, Mistral, xAI, LM Studio o cualquier servidor compatible con OpenAI.
+- **Se actualiza solo.** Las versiones nuevas se instalan en segundo plano y se aplican la próxima
+  vez que abres el juego (puedes desactivarlo en **Juego → Instalación**).
 - **Errores claros.** Si algo falla, Lilith no inventa una excusa: el globo dice qué pasó y cómo
   arreglarlo («La clave de API de OpenAI no es válida…», «Ollama no está abierto…»).
 
@@ -70,6 +72,8 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
 - Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente, la
   personalidad de Lilith, las notas sobre ti, la hora y tu nombre de jugador. Tu clave solo se envía a
   ese servicio.
+- Para buscar actualizaciones, el mod le pide a GitHub la lista de versiones cada pocas horas; no
+  envía nada sobre ti.
 - El mod no lee tu pantalla, tus ventanas ni tus archivos.
 
 ## Si algo falla

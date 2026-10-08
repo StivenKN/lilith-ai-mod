@@ -98,6 +98,25 @@ with code 2 and the plugin shows "reinstall the mod" instead of restarting it.
 Hotkeys use `RegisterHotKey`, so the popup can take keyboard focus from any app. They don't use
 Unity's `Input`: the game's click-through overlay is rarely focused, so Unity misses the keys.
 
+## Updates
+
+`companion/src/updater.ts`, with the file swap in `installer.ts`:
+
+- The copy the game launches (`--bridge`, inside `BepInEx\plugins\LilithAICompanion`) checks
+  GitHub Releases a minute after start, then every 6 hours. Betas follow betas and stable releases;
+  stable installs only follow stable releases.
+- It downloads the release zip and checks it against the `SHA-256` line in the release notes
+  (written by `scripts/release.ts`). Only the plugin DLL and the companion exe are replaced. BepInEx
+  stays as is, as it does when you reinstall over an existing install.
+- The game holds both files open, and Windows lets them be renamed but not overwritten. So each is
+  moved aside as `<name>.<time>.old` and the new file takes its place: both or neither. The game uses
+  them from its next launch. The `.old` files are deleted the next time the companion starts.
+- With **Update automatically** off, or from the downloaded setup exe, the dashboard only shows a
+  banner (with **Update now** where possible).
+- Caveat: if the companion crashes after an update, the plugin restarts the *new* exe next to the
+  *old* DLL. That only matters when `PROTOCOL_VERSION` changed. The player then sees "different
+  versions, reinstall the mod", and restarting the game is enough to fix it.
+
 ## Dashboard security
 
 The dashboard is a local server that holds API keys, so it is locked down:

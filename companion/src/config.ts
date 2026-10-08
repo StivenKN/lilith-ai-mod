@@ -43,6 +43,8 @@ export const ConfigSchema = z.object({
       speakFirst: z.boolean().default(false),
       speakFirstMinutes: z.number().int().min(5).max(240).default(30),
       learnFacts: z.boolean().default(true),
+      /** Install new releases from GitHub on their own (they take effect on the next game launch). */
+      autoUpdate: z.boolean().default(true),
     })
     .prefault({}),
   advanced: z

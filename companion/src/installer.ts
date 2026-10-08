@@ -329,6 +329,54 @@ export async function uninstall(options: { gameDir: string; removeBepInEx: boole
   return { ok: true, outcome: "modAndBepInEx" };
 }
 
+// ── Self-update ────────────────────────────────────────────────────────────────
+
+const LEFTOVER = /\.\d+\.old$/;
+
+/**
+ * Replaces the plugin DLL and companion exe in an installed mod folder, even while the game runs:
+ * Windows lets a loaded DLL or running exe be renamed (not overwritten), so each one is moved aside
+ * as `<name>.<time>.old` and the new file takes its place. Both files switch together or not at all;
+ * the game picks them up on its next launch. Updates the install manifest's version.
+ */
+export async function replaceModFiles(options: { modDir: string; plugin: string; companion: string; version: string }): Promise<void> {
+  const { modDir } = options;
+  const manifestPath = join(modDir, MANIFEST);
+  const manifest = Manifest.parse(await readFile(manifestPath, "utf8").catch(() => ""));
+  if (!manifest) throw new Error(`No install manifest in ${modDir}`);
+
+  const stamp = Date.now();
+  const swaps = [
+    { from: options.plugin, to: join(modDir, PLUGIN_DLL) },
+    { from: options.companion, to: join(modDir, COMPANION_EXE) },
+  ].map((swap) => ({ ...swap, staged: `${swap.to}.new`, old: `${swap.to}.${stamp}.old` }));
+  const moved: typeof swaps = [];
+  try {
+    // Copy first, so a full disk or antivirus lock fails before anything is touched.
+    for (const swap of swaps) await copyFile(swap.from, swap.staged);
+    for (const swap of swaps) {
+      await retry(() => rename(swap.to, swap.old));
+      moved.push(swap);
+      await retry(() => rename(swap.staged, swap.to));
+    }
+  } catch (error) {
+    for (const swap of moved.reverse()) {
+      await rm(swap.to, { force: true }).catch(() => {});
+      await rename(swap.old, swap.to).catch(() => {});
+    }
+    for (const swap of swaps) await rm(swap.staged, { force: true }).catch(() => {});
+    throw error;
+  }
+  await writeFile(manifestPath, `${JSON.stringify({ ...manifest, version: options.version }, null, 2)}\n`, "utf8");
+}
+
+/** Deletes files moved aside by earlier updates. Ones still loaded by a running game are skipped. */
+export async function removeUpdateLeftovers(modDir: string): Promise<void> {
+  for (const name of await readdir(modDir).catch(() => [])) {
+    if (LEFTOVER.test(name)) await rm(join(modDir, name), { force: true }).catch(() => {});
+  }
+}
+
 /** Copies a directory tree, returning the copied files relative to the destination. */
 async function copyTree(from: string, to: string): Promise<string[]> {
   const files: string[] = [];

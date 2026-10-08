@@ -3,7 +3,7 @@ import { resolveLanguage, languages } from "../../src/languages.ts";
 import { capabilityNames } from "../../src/protocol.ts";
 import { call } from "../api.ts";
 import type { Overview } from "../app.tsx";
-import { Check, Field, Note, useTr } from "../ui.tsx";
+import { Check, Note, Toggle, useTr } from "../ui.tsx";
 
 const keys = [...Array.from({ length: 12 }, (_, i) => `F${i + 1}`), ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), ..."0123456789".split("")];
 
@@ -113,6 +113,12 @@ export function GamePage(props: { overview: Overview; refresh: () => void; openW
 
       <h2>{tr("game.installTitle")}</h2>
       <p className="hint">{tr("game.installIntro")}</p>
+      <Toggle
+        checked={config.features.autoUpdate}
+        label={tr("game.autoUpdate")}
+        hint={tr("game.autoUpdateHint")}
+        onChange={(autoUpdate) => void call("saveSettings", { features: { autoUpdate } }).then(props.refresh)}
+      />
       <button className="secondary" onClick={props.openWizard}>
         {tr("game.openInstaller")}
       </button>

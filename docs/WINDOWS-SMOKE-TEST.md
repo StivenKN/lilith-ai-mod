@@ -24,7 +24,8 @@ Keep two things handy:
 | 13 | End `Lilith.exe` in Task Manager | `LilithAICompanion.exe` disappears too |
 | 14 | Dashboard → Game → set the shortcut to a key another app already registered globally (e.g. a screenshot or recording tool's key) | Capability "hotkey" shows ✗ with the reason; picking a free key turns it ✓ |
 | 15 | Help → Copy diagnostic report | Report includes versions, capabilities and the BepInEx log tail; no API key visible |
-| 16 | Run the exe again, game closed → Install step → Uninstall | Game starts unmodded |
+| 16 | Install an older release, then start the game with a newer one published | Within about a minute the dashboard says "Updated to version …"; `LilithAICompanion.*.old` files sit in the mod folder. Restart the game: **Game** shows the new version and the `.old` files are gone |
+| 17 | Run the exe again, game closed → Install step → Uninstall | Game starts unmodded |
 
 ## Things to report back
 

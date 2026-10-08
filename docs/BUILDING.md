@@ -125,6 +125,10 @@ Releases are built and published by `.github/workflows/release.yml` on Windows, 
 
    Tags with a `-` (e.g. `-beta.1`) are published as pre-releases.
 
+   Installed copies pick the release up on their own within a few hours (see
+   [ARCHITECTURE.md](ARCHITECTURE.md#updates)). If you edit the release notes by hand, keep the
+   `SHA-256` line: the updater skips releases without it.
+
 To build the zip locally instead:
 
 ```sh
