@@ -5,7 +5,7 @@ import { inflateSync } from "node:zlib";
 import { z } from "zod";
 import { bgraToPng } from "../computer/png.ts";
 import { createProvider } from "./index.ts";
-import { pullOllamaModel, type PullProgress } from "./ollama.ts";
+import { pullOllamaModel, unloadOllama, type PullProgress } from "./ollama.ts";
 import { ProviderError, type ChatResult } from "./types.ts";
 
 type Handler = (request: Request, body: Record<string, unknown>) => Response | Promise<Response>;
@@ -153,6 +153,25 @@ describe("Ollama adapter", () => {
       "think" in body ? Response.json({ error: '"qwen3.5:4b" does not support thinking' }, { status: 400 }) : Response.json({ message: { content: "ok" } }),
     );
     expect((await ollama(server.url).chat(request)).text).toBe("ok");
+  });
+
+  test("keeps the model in memory for the configured idle time, and frees it only while it's loaded", async () => {
+    let loaded = true;
+    const server = mock((req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/ps") return Response.json({ models: loaded ? [{ name: "qwen3.5:4b" }] : [] });
+      if (path === "/api/generate") {
+        loaded = false;
+        return Response.json({ model: "qwen3.5:4b", done: true, done_reason: "unload" });
+      }
+      return Response.json({ message: { content: "Hola" } });
+    });
+    const provider = createProvider({ preset: "ollama", baseUrl: server.url, model: "qwen3.5:4b", apiKey: "", unloadAfterMinutes: 3 }, noop);
+    await provider.chat(request);
+    expect(server.bodies[0]).toMatchObject({ keep_alive: "3m" });
+    expect(await unloadOllama(server.url, "qwen3.5:4b")).toBe(true);
+    expect(await unloadOllama(server.url, "qwen3.5:4b")).toBe(false);
+    expect(server.bodies.filter((body) => body.keep_alive === 0)).toEqual([{ model: "qwen3.5:4b", keep_alive: 0 }]);
   });
 
   test("maps a missing model to model_not_found", async () => {

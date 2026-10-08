@@ -60,7 +60,8 @@ Nothing needs a restart after a settings change:
 ## A chat turn
 
 1. The player presses F7, the popup opens next to Lilith, and they type and press Enter. The plugin
-   sends `chat`.
+   sends `chatOpened` when the popup appears (so a local model can load meanwhile, see below), then
+   `chat`.
 2. The companion queues the turn. Turns are serialized: one request in flight at a time.
 3. The companion shows the thinking state: `chatStatus thinking`, plus `say "…"` in her bubble.
    - After 8 s it adds "still thinking", or "loading the model" for local AI.
@@ -85,6 +86,21 @@ Nothing needs a restart after a settings change:
 7. On failure, the error is classified (auth, billing, model not found, rate limit, timeout,
    unreachable…). The player sees a localized, actionable message in the bubble and the popup; the
    technical detail goes to the log and the dashboard.
+
+## Local model memory
+
+An Ollama model is in memory only while Lilith needs it. Defined in `brain.ts` and `providers/ollama.ts`.
+
+- **Loading.** Nothing loads when the game starts. `chatOpened` (F7, the tray or the microphone
+  hotkey) loads the model while the player types, or restarts its idle countdown if it's already
+  loaded. Anything else that needs it (speak-first, cards, the dashboard) loads it on demand.
+- **Unloading.** Every request sets `keep_alive` to **AI → Advanced → Free memory after** (10 minutes
+  by default), so Ollama frees the model on its own, even if the companion is killed. It's freed at
+  once (`keep_alive: 0`, only if `/api/ps` lists it) when the game closes, within the 3 s the plugin
+  waits for the companion to exit, and when another model is chosen.
+- Ollama lists a model in `/api/ps` while it's still loading, so one the companion is loading counts
+  as cold until it's ready: the 180 s timeout and the "loading the model" status apply.
+- Other local servers (LM Studio, llama.cpp…) manage their own memory.
 
 ## Voice
 
@@ -119,7 +135,7 @@ Defined in `companion/src/protocol.ts` (Zod) and mirrored in `plugin/src/Protoco
 |---|---|
 | `state{idle, sleep, busy, interacting, drag, langRaw, playerName}` | `ready{v, version, dashboardUrl, hotkey, voiceHotkey, strings}` |
 | `hello{v, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps}` | `say{id, text, emotion, seconds, audio?}` |
-| `chat{text}` · `voice{path}` · `voiceError{detail}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
+| `chat{text}` · `chatOpened{}` · `voice{path}` · `voiceError{detail}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
 | `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | `yieldFocus{}` · `card{id, text}` (only when `caps.card` is ok) |
 
 Bump `PROTOCOL_VERSION` on both sides for breaking changes. On a version mismatch, the companion exits

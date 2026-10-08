@@ -81,6 +81,7 @@ public sealed class Plugin : BasePlugin
     private void StartChatWindow()
     {
         _chat = new ChatWindow(_strings);
+        _chat.Opened += () => _bridge?.Send(Protocol.ChatOpened()); // a local model starts loading while they type
         _chat.Submitted += text =>
         {
             if (_bridge is { Connected: true }) _bridge.Send(Protocol.Chat(text));

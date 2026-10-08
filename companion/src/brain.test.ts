@@ -176,6 +176,30 @@ test("Brain executes one tool turn, shows statuses, and stores only the user and
   expect(brain.snapshot().computer).toMatchObject({ available: true, tools: true, vision: true });
 });
 
+test("an Ollama model loads when the chat opens, and is freed when another is chosen or the game closes", async () => {
+  const loaded = new Set<string>();
+  const loads: string[] = [];
+  respond = async (request) => {
+    if (new URL(request.url).pathname === "/api/ps") return Response.json({ models: [...loaded].map((name) => ({ name })) });
+    const body = await request.json() as { model: string; keep_alive: string | number };
+    loads.push(`${body.model} ${body.keep_alive}`);
+    if (body.keep_alive === 0) loaded.delete(body.model);
+    else loaded.add(body.model);
+    return Response.json({ model: body.model, done: true });
+  };
+  const { brain, config } = await setup("model-memory");
+  await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "qwen" }, advanced: { unloadAfterMinutes: 5 } });
+  brain.handlePluginMessage({ type: "chatOpened" });
+  await until(() => loaded.has("qwen"));
+  await config.update({ provider: { model: "gemma" } });
+  await until(() => !loaded.has("qwen"));
+  brain.handlePluginMessage({ type: "chatOpened" });
+  await until(() => loaded.has("gemma"));
+  await brain.pluginDisconnected();
+  expect(loaded.size).toBe(0);
+  expect(loads).toEqual(["qwen 5m", "qwen 0", "gemma 5m", "gemma 0"]);
+});
+
 test("Brain falls back to ordinary chat when the model rejects tools", async () => {
   const desktop = new FakeDesktop();
   let plainCalls = 0;

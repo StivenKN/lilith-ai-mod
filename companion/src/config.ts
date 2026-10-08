@@ -9,6 +9,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { languageCodes } from "./languages.ts";
 import type { Log } from "./log.ts";
+import { UNLOAD_AFTER_MINUTES } from "./providers/ollama.ts";
 import { presetIds, presets, type PresetId } from "./providers/presets.ts";
 import { searchModes } from "./search.ts";
 import { defaultVoice, sttModelIds, voiceIdsFor } from "./voice/catalog.ts";
@@ -83,8 +84,10 @@ export const ConfigSchema = z.object({
     .prefault({}),
   advanced: z
     .object({
-      /** null = automatic (60 s cloud, 180 s first local load then 60 s). */
+      /** null = automatic (60 s cloud, 180 s while a local model loads, else 60 s). */
       timeoutSeconds: z.number().int().min(10).max(600).nullable().default(null),
+      /** Ollama frees the model's memory after this long without a request; opening the chat loads it again. */
+      unloadAfterMinutes: z.number().int().min(1).max(240).default(UNLOAD_AFTER_MINUTES),
       temperature: z.number().min(0).max(2).default(0.8),
       maxReplyChars: z.number().int().min(60).max(600).default(240),
       bubbleLineUnits: z.number().int().min(12).max(80).default(32),

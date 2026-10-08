@@ -28,7 +28,9 @@ answers in her own speech bubble, in character, in your language, and remembers 
   something, and you can ask for a card any time.
 - **Speaks first** (optional) after a quiet while, never while she's asleep.
 - **Your choice of AI:** Ollama on your PC (free, private), OpenAI, Claude, Gemini, DeepSeek,
-  OpenRouter, Groq, Mistral, xAI, LM Studio, or any OpenAI-compatible server.
+  OpenRouter, Groq, Mistral, xAI, LM Studio, or any OpenAI-compatible server. With Ollama, her model
+  loads when you open the chat and frees its memory after 10 minutes without use, or as soon as you
+  close the game (change the wait in **AI → Advanced**).
 - **Web search** (optional). She can look up news, weather, prices and other current facts:
   for free from your PC (DuckDuckGo, no account), or through [Firecrawl](https://www.firecrawl.dev)
   with your API key. Turn it on in **AI → Web search**.

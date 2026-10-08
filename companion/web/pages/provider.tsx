@@ -371,6 +371,13 @@ function AdvancedSettings(props: { overview: Overview; refresh: () => void }) {
             <input type="number" min={10} max={600} value={advanced.timeoutSeconds ?? ""} placeholder={tr("advanced.auto")} onChange={(event) => number("timeoutSeconds", event.target.value)} />
           </Field>
         </div>
+        {props.overview.config.provider.preset === "ollama" && (
+          <div>
+            <Field label={tr("advanced.unloadAfter")} hint={tr("advanced.unloadAfterHint")}>
+              <input type="number" min={1} max={240} value={advanced.unloadAfterMinutes} onChange={(event) => number("unloadAfterMinutes", event.target.value)} />
+            </Field>
+          </div>
+        )}
         <div>
           <Field label={tr("advanced.temperature")} hint={tr("advanced.temperatureHint")}>
             <input type="number" min={0} max={2} step={0.1} value={advanced.temperature} onChange={(event) => number("temperature", event.target.value)} />

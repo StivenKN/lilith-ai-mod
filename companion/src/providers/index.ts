@@ -9,6 +9,8 @@ export interface ProviderSettings {
   baseUrl: string;
   model: string;
   apiKey: string;
+  /** Ollama only: minutes the model stays in memory after its last request. */
+  unloadAfterMinutes?: number;
 }
 
 /** Builds the adapter for a provider selection, or throws `not_configured` with what's missing. */
@@ -21,7 +23,7 @@ export function createProvider(settings: ProviderSettings, onAdjust: (message: s
   }
   switch (preset.kind) {
     case "ollama":
-      return createOllamaProvider({ baseUrl: settings.baseUrl, model: settings.model, onAdjust });
+      return createOllamaProvider({ baseUrl: settings.baseUrl, model: settings.model, unloadAfterMinutes: settings.unloadAfterMinutes, onAdjust });
     case "anthropic":
       return createAnthropicProvider({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: settings.model, onAdjust });
     case "openai":

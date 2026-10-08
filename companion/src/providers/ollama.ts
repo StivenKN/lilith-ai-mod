@@ -1,14 +1,18 @@
 // Native Ollama API. Uses `think: false` (Qwen-style models otherwise spend the whole budget
-// thinking), a context window big enough for the persona, and a long keep-alive so the model
-// stays loaded between messages. Also exposes the extras the setup wizard needs.
+// thinking) and a context window big enough for the persona. Every request sets how long the
+// model stays in memory afterwards, so Ollama frees it on its own once Lilith goes unused, even if
+// this process is killed. Also loads and unloads models on demand, and has the extras the setup
+// wizard needs.
 
 import { z } from "zod";
 import { computerTools, toolSchema } from "../computer/actions.ts";
 import { awaitWithAbort, requestJson, send, toolsUnsupported, trimSlash } from "./http.ts";
 import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
 
-const KEEP_ALIVE = "30m";
+/** Minutes a model stays loaded after its last request, unless the settings say otherwise. */
+export const UNLOAD_AFTER_MINUTES = 10;
 const NUM_CTX = 8192;
+const keepAlive = (minutes = UNLOAD_AFTER_MINUTES) => `${minutes}m`;
 
 const OllamaMessage = z.looseObject({
   content: z.string().default(""), thinking: z.string().optional(),
@@ -38,6 +42,7 @@ const capabilityChecks = new Map<string, Promise<Capabilities>>();
 export interface OllamaOptions {
   baseUrl: string;
   model: string;
+  unloadAfterMinutes?: number | undefined;
   onAdjust: (message: string) => void;
 }
 
@@ -63,7 +68,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
                 ],
                 stream: false,
                 ...(useThink ? { think: false } : {}),
-                keep_alive: KEEP_ALIVE,
+                keep_alive: keepAlive(options.unloadAfterMinutes),
                 options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature: request.temperature },
               },
             },
@@ -127,7 +132,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
             try {
               const json = await requestJson(`${base}/api/chat`, { body: {
                 model: options.model, messages, stream: false, ...(useThink ? { think: false } : {}),
-                keep_alive: KEEP_ALIVE,
+                keep_alive: keepAlive(options.unloadAfterMinutes),
                 options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature: request.temperature },
                 tools: computerTools(request.vision).map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } })),
               } }, http);
@@ -173,7 +178,7 @@ export async function ollamaVersion(baseUrl: string): Promise<string | null> {
   }
 }
 
-/** Whether the model is currently loaded in memory (first message after a load is slow). */
+/** Whether the model is in memory. Ollama lists a model while it's still loading, too. */
 export async function isOllamaModelLoaded(baseUrl: string, model: string): Promise<boolean> {
   try {
     const json = await requestJson(`${ollamaBase(baseUrl)}/api/ps`, {}, { timeoutMs: 2_000 });
@@ -183,9 +188,23 @@ export async function isOllamaModelLoaded(baseUrl: string, model: string): Promi
   }
 }
 
-/** Loads the model in the background so the first chat message doesn't wait for it. */
-export async function warmUpOllama(baseUrl: string, model: string): Promise<void> {
-  await requestJson(`${ollamaBase(baseUrl)}/api/generate`, { body: { model, keep_alive: KEEP_ALIVE } }, { timeoutMs: 300_000 });
+/** Loads the model (or restarts its idle countdown) so the next message doesn't wait for it. */
+export async function warmUpOllama(baseUrl: string, model: string, unloadAfterMinutes?: number): Promise<void> {
+  await requestJson(`${ollamaBase(baseUrl)}/api/generate`, { body: { model, keep_alive: keepAlive(unloadAfterMinutes) } }, { timeoutMs: 300_000 });
+}
+
+/**
+ * Frees the model's memory now (what `ollama stop` does). Returns whether it was loaded. Never
+ * throws: Ollama may be closed, or the model deleted, and either way there's nothing to free.
+ */
+export async function unloadOllama(baseUrl: string, model: string): Promise<boolean> {
+  if (!(await isOllamaModelLoaded(baseUrl, model))) return false;
+  try {
+    await requestJson(`${ollamaBase(baseUrl)}/api/generate`, { body: { model, keep_alive: 0 } }, { timeoutMs: 2_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Downloads a model, reporting progress events as they stream in. */
