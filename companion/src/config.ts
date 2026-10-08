@@ -2,7 +2,7 @@
 // Stored as %APPDATA%\LilithAICompanion\config.json and written atomically.
 
 import { z } from "zod";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { languageCodes } from "./languages.ts";
 import { presetIds, presets, type PresetId } from "./providers/presets.ts";
@@ -89,10 +89,10 @@ export class ConfigStore {
 
   /** Loads the file, falling back to defaults (and keeping a backup) if it's missing or invalid. */
   static async load(path: string, onWarning: (message: string) => void = () => {}): Promise<ConfigStore> {
-    const file = Bun.file(path);
-    if (!(await file.exists())) return new ConfigStore(path, defaultConfig());
+    const text = await readTextFile(path);
+    if (text === null) return new ConfigStore(path, defaultConfig());
     try {
-      const parsed = ConfigSchema.safeParse(await file.json());
+      const parsed = ConfigSchema.safeParse(JSON.parse(text));
       if (parsed.success) return new ConfigStore(path, parsed.data);
       onWarning(`config.json is invalid (${z.prettifyError(parsed.error)}); using defaults and keeping a backup`);
     } catch (error) {
@@ -129,6 +129,20 @@ export class ConfigStore {
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * File contents, or null if the file doesn't exist. Uses node:fs on purpose: in the compiled
+ * Windows build, reading a missing file through Bun.file() never settled, and the process quietly
+ * exited on first run.
+ */
+export async function readTextFile(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 /** Write to a temp file then rename, so a crash never leaves a half-written file. */
 export async function writeAtomic(path: string, contents: string): Promise<void> {
