@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { call, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
-import { Check, Field, Note, Toggle, useTr } from "../ui.tsx";
+import { Check, Field, Note, Toggle, hotkeyLabel, useTr } from "../ui.tsx";
 import { ProviderForm } from "./provider.tsx";
 
 type Step = "game" | "ai" | "done";
@@ -199,8 +199,7 @@ function GameStep(props: { onNext: () => void }) {
 
 function DoneStep(props: { overview: Overview; onFinish: () => void }) {
   const tr = useTr();
-  const { hotkey } = props.overview.config;
-  const keyLabel = [hotkey.ctrl && "Ctrl", hotkey.alt && "Alt", hotkey.shift && "Shift", hotkey.key].filter(Boolean).join(" + ");
+  const keyLabel = hotkeyLabel(props.overview.config.hotkey);
   const fromGame = props.overview.app.mode === "bridge";
   return (
     <>
