@@ -278,6 +278,36 @@ button:disabled {
   cursor: progress;
 }
 
+/* Shortcut recorder: the current combination as a keycap; it pulses while listening. */
+button.hotkey {
+  font: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+button.hotkey kbd {
+  display: inline-block;
+  min-width: 7em;
+  padding: 8px 16px;
+  font: 600 15px var(--font-code);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-width: 3px;
+  border-radius: var(--radius-s);
+  text-align: center;
+}
+button.hotkey.recording kbd {
+  border-color: var(--accent);
+  animation: listening 1.2s ease-in-out infinite;
+}
+@keyframes listening {
+  50% {
+    border-color: var(--line);
+  }
+}
+
 .toggle {
   display: flex;
   gap: 12px;

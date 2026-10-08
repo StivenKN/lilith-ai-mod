@@ -1,12 +1,17 @@
 // Small shared pieces: locale context, form controls, notes, Lilith's bubble.
 
 import { createContext, useContext, type ReactNode } from "react";
+import type { Hotkey } from "../src/config.ts";
 import { translator } from "../src/i18n.ts";
 import type { UiLocale } from "../src/languages.ts";
 
 export const LocaleContext = createContext<UiLocale>("en");
 export const useTr = () => translator(useContext(LocaleContext));
 export const useLocale = () => useContext(LocaleContext);
+
+/** Human-readable shortcut, e.g. "Ctrl + Shift + F7". */
+export const hotkeyLabel = (hotkey: Hotkey) =>
+  [hotkey.ctrl && "Ctrl", hotkey.alt && "Alt", hotkey.shift && "Shift", hotkey.key].filter(Boolean).join(" + ");
 
 /** Labelled control. Pass `id` (and put it on the input) when the field also contains buttons. */
 export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; id?: string }) {
