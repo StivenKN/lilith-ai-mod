@@ -23,6 +23,7 @@ internal sealed class ChatWindow : IDisposable
     private const int IdEdit = 1, IdSend = 2, IdSettings = 3;
     private const uint WmShow = WM_APP + 1, WmStatus = WM_APP + 2, WmHotkeyChanged = WM_APP + 3, WmStrings = WM_APP + 4;
     private const uint EmLimitText = 0x00C5;
+    private const uint WmYieldFocus = WM_APP + 5;
 
     // Layout in 96-DPI pixels.
     private const int WindowWidth = 440, Pad = 10, FieldHeight = 38, Gap = 8, StatusGap = 5, StatusHeight = 18, BottomPad = 8;
@@ -96,6 +97,8 @@ internal sealed class ChatWindow : IDisposable
     }
 
     public void Show() => PostMessageW(_hwnd, WmShow, IntPtr.Zero, IntPtr.Zero);
+
+    public void YieldFocus() => PostMessageW(_hwnd, WmYieldFocus, IntPtr.Zero, IntPtr.Zero);
 
     // ── Window thread ─────────────────────────────────────────────────────
 
@@ -284,6 +287,13 @@ internal sealed class ChatWindow : IDisposable
                     return IntPtr.Zero;
                 case WmStatus:
                     lock (_gate) SetWindowTextW(_status, _statusText);
+                    return IntPtr.Zero;
+                case WmYieldFocus:
+                    if (IsWindowVisible(_hwnd))
+                    {
+                        if (GetForegroundWindow() == _hwnd) HideAndRestoreFocus();
+                        else ShowWindow(_hwnd, SW_HIDE);
+                    }
                     return IntPtr.Zero;
                 case WmStrings:
                     lock (_gate)

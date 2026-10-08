@@ -1,3 +1,6 @@
+import type { z } from "zod";
+import type { HttpOptions } from "./http.ts";
+
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
@@ -29,6 +32,47 @@ export interface ModelInfo {
 export interface Provider {
   chat(request: ChatRequest): Promise<ChatResult>;
   listModels(timeoutMs?: number): Promise<ModelInfo[]>;
+  capabilities(http: HttpOptions, refresh?: boolean): Promise<Capabilities>;
+  agent(request: AgentRequest): AgentSession;
+}
+
+export interface Capabilities {
+  tools: boolean;
+  vision: boolean;
+}
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  input: z.ZodObject;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+  toolset?: string;
+  error?: string;
+}
+
+export interface ToolResult {
+  id: string;
+  text: string;
+  image?: Uint8Array;
+  isError?: boolean;
+}
+
+export interface AgentRequest extends Pick<ChatRequest, "system" | "turns" | "maxTokens" | "temperature"> {
+  vision: boolean;
+}
+
+export interface AgentStep extends Pick<ChatResult, "text" | "model" | "finish"> {
+  calls: ToolCall[];
+}
+
+/** One computer turn. The adapter owns its transcript, including provider-specific fields. */
+export interface AgentSession {
+  next(results: readonly ToolResult[], http: HttpOptions): Promise<AgentStep>;
 }
 
 /** Every failure is classified so the user sees a specific, fixable message instead of a stock line. */
@@ -46,6 +90,7 @@ export const errorKinds = [
   "bad_response",
   "empty_reply",
   "refused",
+  "no_tools",
 ] as const;
 export type ErrorKind = (typeof errorKinds)[number];
 

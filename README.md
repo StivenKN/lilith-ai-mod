@@ -27,6 +27,8 @@ answers in her own speech bubble, in character, in your language, and remembers 
   start the game (turn it off in **Game → Installation**).
 - **Honest errors.** When something fails, she doesn't make up an excuse: the bubble says what broke
   and how to fix it ("The OpenAI API key isn't valid…", "Ollama isn't running…").
+- **Computer control.** Ask Lilith to open apps or links, type, and use the mouse. Vision models
+  can read screenshots; other models stick to keyboard and app-launch tools. Windows x64 only.
 
 ## Install
 
@@ -44,11 +46,20 @@ unsigned programs).
 ## Privacy
 
 Settings, API keys, memory and logs stay on your PC in `%APPDATA%\LilithAICompanion`. With Ollama or
-another local server nothing leaves your PC. With an online service, your message, the recent
+another server on this PC nothing leaves your PC. A LAN server receives the data on your network.
+With an online service, your message, the recent
 conversation, Lilith's persona, her notes about you, the time and your player name go to that
 service. With web search on, only the search words she picks go to DuckDuckGo or Firecrawl, never
 your conversation. To check for updates, the mod asks GitHub for the list of releases every few hours; nothing
-about you is sent. The mod never reads your screen, windows or files.
+about you is sent.
+
+Computer control is automatic for local or LAN AI, and off for online services until you enable
+it in **Lilith → Using your PC**. When asked to use your PC, Lilith can inspect the focused app and
+send screenshots of the primary screen to the selected AI server if its model can see images.
+Screenshots stay in memory during the turn and are not saved in conversation history or logs.
+Models without vision can only open apps and links, type and press keys. Move the mouse or press
+a key to stop her. The prompt tells her to ask before purchases, sending messages, deletion,
+password entry or accepting terms. Terminal and system-tool keyboard input is blocked in code.
 
 ## Uninstall
 

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import type { SettingsPatch } from "../../src/config.ts";
+import { useEffect, useRef, useState } from "react";
+import type { Config, SettingsPatch } from "../../src/config.ts";
 import { languageCodes, languages, type Language } from "../../src/languages.ts";
-import { call, useRpc } from "../api.ts";
+import { call, useRpc, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
 import { Field, Toggle, useTr } from "../ui.tsx";
 
@@ -13,6 +13,16 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
   const [personaText, setPersonaText] = useState("");
   const [notesText, setNotesText] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [computer, setComputer] = useState<Output<"computerCheck"> | null>(null);
+  const checkVersion = useRef(0);
+
+  useEffect(() => {
+    checkVersion.current++;
+    setComputer(null);
+    setChecking(false);
+    return () => { checkVersion.current++; };
+  }, [config.provider.baseUrl, config.provider.model, config.provider.preset, config.apiKeys[config.provider.preset]]);
 
   useEffect(() => {
     if (persona.data) setPersonaText(persona.data.custom ?? persona.data.builtIn);
@@ -110,6 +120,32 @@ export function LilithPage(props: { overview: Overview; refresh: () => void }) {
           />
         </Field>
       )}
+
+      <h2>{tr("computer.title")}</h2>
+      <Field label={tr("computer.mode")}>
+        <select value={config.features.computerControl} onChange={(event) => void saveSettings({ features: { computerControl: event.target.value as Config["features"]["computerControl"] } })}>
+          <option value="auto">{tr("computer.auto")}</option>
+          <option value="on">{tr("computer.on")}</option>
+          <option value="off">{tr("computer.off")}</option>
+        </select>
+      </Field>
+      <p className="hint">{tr("computer.privacy")}</p>
+      {!props.overview.brain.computer.enabled && <p className="hint">{tr("computer.disabled")}</p>}
+      <button className="secondary" disabled={checking} onClick={() => {
+        const version = ++checkVersion.current;
+        setChecking(true);
+        void call("computerCheck").then((result) => {
+          if (version === checkVersion.current) setComputer(result);
+        }).catch((error: unknown) => {
+          if (version === checkVersion.current) setComputer({ available: false, tools: false, vision: false, reason: error instanceof Error ? error.message : String(error) });
+        }).finally(() => { if (version === checkVersion.current) setChecking(false); });
+      }}>{tr(checking ? "computer.checking" : "computer.check")}</button>
+      {(() => {
+        const state = computer ?? props.overview.brain.computer;
+        if (!state.available || state.reason) return <p role="status" className="hint">{tr("computer.unavailable", { reason: state.reason ?? "" })}</p>;
+        if (state.tools === undefined) return null;
+        return <p role="status" className="hint">{tr(!state.tools ? "computer.noTools" : state.vision ? "computer.vision" : "computer.blind")}</p>;
+      })()}
 
       <h2>{tr("lilith.historyTitle")}</h2>
       <p className="hint">{tr("lilith.historyIntro")}</p>

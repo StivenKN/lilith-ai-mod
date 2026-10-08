@@ -33,6 +33,8 @@ jobs:
         run: pnpm exec tsc --noEmit
 
       - name: Tests
+        env:
+          LILITH_AI_TEST_INPUT: "1"
         run: bun test
 
       - name: Build LilithAICompanion.exe
@@ -46,7 +48,10 @@ jobs:
           $ok = $false
           foreach ($i in 1..20) {
             Start-Sleep -Milliseconds 500
-            try { if ((Invoke-WebRequest http://127.0.0.1:47321/api/ping -UseBasicParsing -TimeoutSec 2).Content -match "lilith-ai-companion") { $ok = $true; break } } catch {}
+            try {
+              $ping = (Invoke-WebRequest http://127.0.0.1:47321/api/ping -UseBasicParsing -TimeoutSec 2).Content | ConvertFrom-Json
+              if ($ping.app -eq "lilith-ai-companion" -and $ping.desktop -eq "ok") { $ok = $true; break }
+            } catch {}
           }
           Get-Content "$env:LILITH_AI_DATA_DIR\logs\lilith-ai.log" -ErrorAction SilentlyContinue
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } else { Write-Host "exited with $($p.ExitCode)" }

@@ -90,6 +90,8 @@ export function createProcedures(ctx: AppContext) {
 
     testProvider: procedure(ProviderInput, async (input) => ctx.brain.testProvider(providerSettings(input))),
 
+    computerCheck: procedure(none, async () => ctx.brain.computerCheck()),
+
     /** Runs one search with the given (possibly unsaved) settings, so the player can check them. */
     testSearch: procedure(
       z.object({
@@ -222,7 +224,10 @@ export function startServer(ctx: AppContext): DashboardServer {
 
   const routes = {
     "/": dashboard,
-    "/api/ping": () => Response.json({ app: APP_NAME, version: ctx.version, mode: ctx.mode }),
+    "/api/ping": () => {
+      const computer = ctx.brain.snapshot().computer;
+      return Response.json({ app: APP_NAME, version: ctx.version, mode: ctx.mode, desktop: computer.available ? "ok" : computer.reason });
+    },
     "/api/session": {
       POST: async (request: Request) => {
         if (!hostOk(request)) return deny(request);

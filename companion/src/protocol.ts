@@ -69,6 +69,7 @@ export interface PluginStrings {
 }
 
 export type CompanionMessage =
+  | { type: "yieldFocus" }
   | {
       type: "ready";
       v: number;

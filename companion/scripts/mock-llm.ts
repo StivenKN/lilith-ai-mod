@@ -3,6 +3,7 @@
 //   bun scripts/mock-llm.ts [port]        (default 11555)
 // Then pick "Custom" with http://127.0.0.1:11555/v1, or Ollama with http://127.0.0.1:11555.
 // With web search on, messages that start with "?" make it ask for a search, then quote the top result.
+// With computer tools, messages starting with "!" open an example URL, then return a final reply.
 
 const port = Number(process.argv[2] ?? 11555);
 const installed = new Set(["qwen3.5:4b"]);
@@ -35,9 +36,14 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     const body = request.method === "POST" ? ((await request.json().catch(() => ({}))) as Record<string, unknown>) : {};
-    const messages = (body.messages as Array<{ role: string; content: string }> | undefined) ?? [];
-    const system = messages.find((message) => message.role === "system")?.content ?? "";
-    const user = messages.findLast((message) => message.role === "user")?.content ?? "";
+    const messages = (body.messages as Array<{ role: string; content: unknown }> | undefined) ?? [];
+    const systemContent = messages.find((message) => message.role === "system")?.content;
+    const userContent = messages.findLast((message) => message.role === "user" && typeof message.content === "string")?.content;
+    const system = typeof systemContent === "string" ? systemContent : "";
+    const user = typeof userContent === "string" ? userContent : "";
+    const toolRequest = !!body.tools && user.startsWith("!") && !messages.some((message) => message.role === "tool");
+    const toolReply = messages.some((message) => message.role === "tool");
+    const tool = { name: "open_url", arguments: { url: "https://example.com/" } };
     await Bun.sleep(600);
 
     switch (url.pathname) {
@@ -45,6 +51,8 @@ const server = Bun.serve({
         return Response.json({ data: [{ id: "mock-lilith" }, { id: "mock-lilith-large" }] });
       case "/v1/chat/completions":
         if (body.model === "broken") return Response.json({ error: { message: "The model `broken` does not exist" } }, { status: 404 });
+        if (toolRequest) return Response.json({ model: body.model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "mock-open", type: "function", function: { ...tool, arguments: JSON.stringify(tool.arguments) } }] } }] });
+        if (toolReply) return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: "[feliz] Abrí el enlace." } }] });
         return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: reply(system, user) } }] });
       case "/api/version":
         return Response.json({ version: "0.33.1-mock" });
@@ -54,8 +62,12 @@ const server = Bun.serve({
         return Response.json({ models: [...installed].map((name) => ({ name })) });
       case "/api/generate":
         return Response.json({ done: true });
+      case "/api/show":
+        return Response.json({ capabilities: ["tools", "vision"] });
       case "/api/chat":
         if (!installed.has(String(body.model))) return Response.json({ error: `model "${String(body.model)}" not found, try pulling it first` }, { status: 404 });
+        if (toolRequest) return Response.json({ model: body.model, message: { content: "", tool_calls: [{ function: tool }] }, done_reason: "stop" });
+        if (toolReply) return Response.json({ model: body.model, message: { content: "[feliz] Abrí el enlace." }, done_reason: "stop" });
         return Response.json({ model: body.model, message: { content: reply(system, user) }, done_reason: "stop" });
       case "/api/pull": {
         const model = String(body.model);

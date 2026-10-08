@@ -138,15 +138,16 @@ export const getPreset = (id: PresetId): Preset => presets[id];
 export function isLocalUrl(baseUrl: string): boolean {
   try {
     const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "");
+    if (host.includes(":")) return host === "::1" || /^(fc|fd)[0-9a-f]{2}:|^fe[89ab][0-9a-f]:/i.test(host);
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+      const parts = host.split(".").map(Number);
+      if (parts.some((part) => part > 255)) return false;
+      return parts[0] === 127 || parts[0] === 10 || (parts[0] === 192 && parts[1] === 168)
+        || (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31)
+        || (parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127);
+    }
     return (
       host === "localhost" ||
-      host === "::1" ||
-      /^127\./.test(host) ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) || // Tailscale CGNAT
-      /^(fc|fd|fe80)/i.test(host) ||
       host.endsWith(".local") ||
       !host.includes(".")
     );

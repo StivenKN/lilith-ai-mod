@@ -3,14 +3,18 @@
 // models that reject them.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { classifyStatus, trimSlash } from "./http.ts";
-import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type Provider } from "./types.ts";
+import type { BetaMessageParam, BetaToolUnion, BetaToolResultBlockParam, BetaTextBlockParam, BetaImageBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import { computerTools, toolSchema } from "../computer/actions.ts";
+import { classifyStatus, toolsUnsupported, trimSlash } from "./http.ts";
+import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type Provider, type ToolCall } from "./types.ts";
 
 const FALLBACK_MODELS = /^claude-(fable-5-1|opus-5-5|opus-5|sonnet-5-5)$/;
 const EFFORT_MODELS = /^claude-(fable|mythos|opus-(4-[5-9]|5)|sonnet-(4-6|5))/;
+const TOOLSET_MODELS = /^claude-(fable-5|mythos-5|opus-5|sonnet-5|opus-4-8|haiku-5-5)/;
 
 /** Per-model features the API rejected at runtime. */
-const rejected = new Map<string, Set<"effort" | "fallbacks">>();
+type RejectedFeature = "effort" | "fallbacks" | "toolset" | "cache" | "tools";
+const rejected = new Map<string, Set<RejectedFeature>>();
 
 export interface AnthropicOptions {
   baseUrl: string;
@@ -21,8 +25,9 @@ export interface AnthropicOptions {
 
 export function createAnthropicProvider(options: AnthropicOptions): Provider {
   const client = new Anthropic({ apiKey: options.apiKey, baseURL: trimSlash(options.baseUrl), maxRetries: 1 });
-  const off = rejected.get(options.model) ?? new Set();
-  rejected.set(options.model, off);
+  const key = `${trimSlash(options.baseUrl)}|${options.model}`;
+  const off = rejected.get(key) ?? new Set<RejectedFeature>();
+  rejected.set(key, off);
 
   return {
     async chat(request: ChatRequest): Promise<ChatResult> {
@@ -78,6 +83,67 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
       } catch (error) {
         throw toProviderError(error);
       }
+    },
+
+    async capabilities(_http, refresh = false) {
+      if (refresh) off.delete("tools");
+      return { tools: !off.has("tools"), vision: /^claude-/i.test(options.model) };
+    },
+
+    agent(request) {
+      const messages: BetaMessageParam[] = normalizeTurns(request.turns);
+      let pending: ToolCall[] = [];
+      return {
+        async next(results, http) {
+          if (off.has("tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
+          if (results.length) {
+            const content: BetaToolResultBlockParam[] = results.map((result) => {
+              const blocks: Array<BetaTextBlockParam | BetaImageBlockParam> = [{ type: "text", text: result.text }];
+              if (result.image) blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from(result.image).toString("base64") } });
+              const toolset = pending.find((call) => call.id === result.id)?.toolset;
+              return { type: "tool_result", tool_use_id: result.id, content: blocks, ...(result.isError ? { is_error: true } : {}), ...(toolset ? { toolset_name: toolset } : {}) };
+            });
+            messages.push({ role: "user", content });
+          }
+          for (let attempt = 0; ; attempt++) {
+            const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
+            const tools: BetaToolUnion[] = computerTools(request.vision)
+              .filter((tool) => !toolset || ["open_app", "open_url"].includes(tool.name))
+              .map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
+            if (toolset) tools.unshift({ type: "computer_toolset_20260801", configs: { hold_key: { enabled: false }, left_mouse_down: { enabled: false }, left_mouse_up: { enabled: false } } });
+            try {
+              const response = await client.beta.messages.create({
+                model: options.model, system: request.system, messages, max_tokens: request.maxTokens, tools,
+                ...(!off.has("cache") ? { cache_control: { type: "ephemeral" as const } } : {}),
+                ...(EFFORT_MODELS.test(options.model) && !off.has("effort") ? { output_config: { effort: "low" as const } } : {}),
+              }, { timeout: http.timeoutMs, ...(http.signal ? { signal: http.signal } : {}) });
+              if (response.stop_reason === "refusal") throw new ProviderError("refused", `Claude declined (${response.stop_details?.category ?? "no category"})`);
+              // Keep thinking/signature blocks and all toolset metadata exactly as returned.
+              messages.push({ role: "assistant", content: response.content });
+              pending = response.content.flatMap((block): ToolCall[] => block.type === "tool_use" ? [{ id: block.id, name: block.name, input: block.input, ...(block.toolset_name ? { toolset: block.toolset_name } : {}) }] : []);
+              return { calls: pending, text: response.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(""), model: response.model, finish: response.stop_reason === "max_tokens" ? "length" : "stop" };
+            } catch (error) {
+              if (http.signal?.aborted) throw error;
+              const classified = toProviderError(error);
+              if (attempt < 3 && classified.status === 400) {
+                const feature = toolset && !pending.length && /toolset/i.test(classified.message) ? "toolset"
+                  : /effort|output_config/i.test(classified.message) ? "effort"
+                  : /cache_control/i.test(classified.message) ? "cache" : null;
+                if (feature && !off.has(feature)) {
+                  off.add(feature);
+                  options.onAdjust(`${options.model}: API rejected "${feature}", retrying without it`);
+                  continue;
+                }
+              }
+              if (toolsUnsupported(classified)) {
+                off.add("tools");
+                throw new ProviderError("no_tools", classified.message, 400);
+              }
+              throw classified;
+            }
+          }
+        },
+      };
     },
   };
 }

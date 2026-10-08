@@ -11,6 +11,7 @@ import { ConfigStore, readTextFile, writeAtomic } from "./config.ts";
 import { errorMessage, Logger } from "./log.ts";
 import { Memory } from "./memory.ts";
 import { dataPaths } from "./paths.ts";
+import { openPath as openWithDefaultHandler } from "./open.ts";
 import type { CompanionMessage } from "./protocol.ts";
 import { APP_NAME, startServer, type AppContext } from "./server.ts";
 import { Updater } from "./updater.ts";
@@ -35,18 +36,10 @@ process.on("unhandledRejection", (reason) => log.error(`unhandled rejection: ${e
 
 /** Opens a URL or folder with the OS default handler. */
 function openPath(target: string): void {
-  const command =
-    process.platform === "win32"
-      ? target.startsWith("http")
-        ? ["rundll32", "url.dll,FileProtocolHandler", target]
-        : ["explorer.exe", target]
-      : process.platform === "darwin"
-        ? ["open", target]
-        : ["xdg-open", target];
   try {
     // Never `windowsHide` here: rundll32/explorer are GUI programs (no console flash), and a hidden
     // launch is passed on to the browser they start, which then opens invisible.
-    Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+    openWithDefaultHandler(target);
     log.info(`opened ${target}`);
   } catch (error) {
     log.warn(`could not open ${target}: ${errorMessage(error)}`);
@@ -126,7 +119,7 @@ async function main(): Promise<void> {
 
   async function shutdown(code: number, reason: string): Promise<never> {
     log.info(`shutting down: ${reason}`);
-    brain.stop();
+    await brain.stop();
     updater.stop();
     config.close();
     server.stop();

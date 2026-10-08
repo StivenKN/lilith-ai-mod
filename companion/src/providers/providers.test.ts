@@ -1,6 +1,9 @@
 // Adapters against local mock servers that replay the failure modes users actually hit.
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { inflateSync } from "node:zlib";
+import { z } from "zod";
+import { bgraToPng } from "../computer/png.ts";
 import { createProvider } from "./index.ts";
 import { pullOllamaModel, type PullProgress } from "./ollama.ts";
 import { ProviderError, type ChatResult } from "./types.ts";
@@ -11,11 +14,12 @@ const servers: Array<{ stop: (force?: boolean) => unknown }> = [];
 afterAll(() => servers.forEach((server) => server.stop(true)));
 
 /** Starts a mock server; returns its base URL and the request bodies it received. */
-function mock(handler: Handler) {
+function mock(handler: Handler, props?: { modalities: { vision: boolean } } | (() => Response | Promise<Response>)) {
   const bodies: Array<Record<string, unknown>> = [];
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
+      if (request.method === "GET" && new URL(request.url).pathname === "/props") return typeof props === "function" ? props() : props ? Response.json(props) : new Response("Not found", { status: 404 });
       const body = request.method === "POST" ? ((await request.json()) as Record<string, unknown>) : {};
       bodies.push(body);
       return handler(request, body);
@@ -71,6 +75,19 @@ describe("OpenAI-compatible adapter", () => {
     );
     expect((await openai(server.url).chat(request)).text).toBe("ok");
     expect(server.bodies).toHaveLength(2);
+  });
+
+  test.each(["chat", "tools"] as const)("a cancelled %s request interrupts the Retry-After wait without another request", async (mode) => {
+    const server = mock(() => Response.json({ error: { message: "Rate limit" } }, { status: 429, headers: { "retry-after": "15" } }));
+    let started!: () => void;
+    const reached = new Promise<void>((resolve) => { started = resolve; });
+    const provider = createProvider({ preset: "custom", baseUrl: server.url, model: "retry-cancellation", apiKey: "test" }, () => started());
+    const controller = new AbortController();
+    const pending = mode === "chat" ? provider.chat({ ...request, signal: controller.signal }) : provider.agent({ ...request, vision: false }).next([], { timeoutMs: 2000, signal: controller.signal });
+    await reached;
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(server.bodies).toHaveLength(1);
   });
 
   test("switches to max_completion_tokens when max_tokens is rejected", async () => {
@@ -186,5 +203,190 @@ describe("Anthropic adapter", () => {
   test("classifies an invalid key", async () => {
     const server = mock(() => Response.json({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }, { status: 401 }));
     expect((await chatError(claude(server.url, "claude-sonnet-5-5").chat(request))).kind).toBe("auth");
+  });
+});
+
+const agentRequest = { ...request, vision: true };
+const http = { timeoutMs: 2000 };
+const image = bgraToPng(Uint8Array.of(0, 0, 255, 0), 1, 1);
+const transcript = z.object({ messages: z.array(z.looseObject({ role: z.string(), content: z.unknown() })) });
+
+function describeProbe(body: Record<string, unknown>) {
+  const { messages } = z.object({ messages: z.array(z.object({ content: z.array(z.looseObject({ type: z.string() })) })) }).parse(body);
+  const part = z.object({ image_url: z.object({ url: z.string() }) }).parse(messages[0]!.content[1]);
+  const png = Buffer.from(part.image_url.url.split(",")[1]!, "base64");
+  const bytes = inflateSync(png.subarray(41, 41 + png.readUInt32BE(33)));
+  const colors: Record<string, string> = { "255,0,0": "red", "0,255,0": "green", "0,0,255": "blue", "255,255,0": "yellow", "0,0,0": "black", "255,255,255": "white" };
+  return completion(`Left: ${colors[[...bytes.subarray(1, 4)].join(",")]}. Right: ${colors[[...bytes.subarray(97, 100)].join(",")]}.`);
+}
+
+describe("computer sessions", () => {
+  test("llama.cpp text-only metadata avoids sending an image probe", async () => {
+    const server = mock(() => { throw new Error("An image probe must not reach a text-only model"); }, { modalities: { vision: false } });
+    expect(await openai(server.url).capabilities(http)).toEqual({ tools: true, vision: false });
+    expect(server.bodies).toHaveLength(0);
+  });
+
+  test.each([502, 503, 504])("HTTP %i capability failures are not cached as blind mode", async (status) => {
+    for (const route of ["metadata", "image"] as const) {
+      let calls = 0;
+      const failure = () => Response.json({ error: "Loading model" }, { status });
+      const server = route === "metadata"
+        ? mock(() => { throw new Error("No image probe after a transient metadata error"); }, () => ++calls === 1 ? failure() : Response.json({ modalities: { vision: true } }))
+        : mock((_request, body) => ++calls === 1 ? failure() : describeProbe(body));
+      await expect(openai(server.url).capabilities(http)).rejects.toMatchObject({ status });
+      expect(await openai(server.url).capabilities(http)).toEqual({ tools: true, vision: true });
+      expect(calls).toBe(2);
+    }
+  });
+
+  test("a metadata timeout stops before an image probe and permits a fresh check", async () => {
+    let calls = 0;
+    const server = mock(() => { throw new Error("No image probe after a metadata timeout"); }, async () => {
+      if (++calls === 1) await Bun.sleep(50);
+      return Response.json({ modalities: { vision: true } });
+    });
+    await expect(openai(server.url).capabilities({ timeoutMs: 10 })).rejects.toMatchObject({ kind: "timeout" });
+    expect(await openai(server.url).capabilities(http)).toEqual({ tools: true, vision: true });
+    expect(server.bodies).toHaveLength(0);
+  });
+
+  test.each(["openai", "ollama"] as const)("%s tool sessions retain the ordinary chat history", async (preset) => {
+    const server = mock(() => preset === "ollama" ? Response.json({ message: { content: "Done" } }) : completion("Done"));
+    const turns = Array.from({ length: 19 }, (_, index) => ({ role: index % 2 ? "assistant" as const : "user" as const, content: `Turn ${index}` }));
+    const provider = createProvider({ preset, baseUrl: server.url, model: "history", apiKey: "test" }, noop);
+    await provider.agent({ ...agentRequest, turns }).next([], http);
+    expect(transcript.parse(server.bodies[0]).messages).toHaveLength(20);
+  });
+
+  test.each(["openai", "ollama"] as const)("a %s capability caller can stop while another caller owns the probe", async (preset) => {
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const reached = new Promise<void>((resolve) => { started = resolve; });
+    const server = mock(async () => {
+      started();
+      await waiting;
+      return preset === "ollama" ? Response.json({ capabilities: ["tools"] }) : completion("Cannot see it");
+    });
+    const settings = { preset, baseUrl: server.url, model: "shared-probe", apiKey: "test" };
+    const owner = createProvider(settings, noop).capabilities(http);
+    await reached;
+    const controller = new AbortController();
+    const second = createProvider(settings, noop).capabilities({ ...http, signal: controller.signal });
+    controller.abort(new Error("Stopped"));
+    try { await expect(second).rejects.toThrow("Stopped"); }
+    finally { release(); await owner; }
+  });
+
+  test.each(["openai", "ollama", "anthropic"] as const)("a malformed %s tool transcript does not disable tools", async (preset) => {
+    const server = mock(() => Response.json({ error: { message: "tool results have invalid tool_call_id" } }, { status: 400 }));
+    const provider = createProvider({ preset, baseUrl: server.url, model: "transcript-error", apiKey: "test" }, noop);
+    await expect(provider.agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "bad_request" });
+    await expect(provider.agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "bad_request" });
+    expect(server.bodies).toHaveLength(2);
+  });
+
+  test("OpenAI preserves thought signatures and tool ids, sends only the newest image", async () => {
+    const signature = { thought_signature: "keep-me" };
+    let n = 0;
+    const server = mock(() => completion("", { role: "assistant", tool_calls: [{ id: `call-${++n}`, type: "function", function: { name: "screenshot", arguments: "{}" }, extra_content: { google: signature } }] }));
+    const session = openai(server.url).agent(agentRequest);
+    const first = await session.next([], http);
+    await session.next([{ id: first.calls[0]!.id, text: "OK", image }], http);
+    await session.next([{ id: "call-2", text: "OK", image }], http);
+    const last = transcript.parse(server.bodies.at(-1)).messages;
+    expect(last.find((message) => message.role === "assistant")).toHaveProperty("tool_calls.0.extra_content.google", signature);
+    expect(last.find((message) => message.role === "tool")).toMatchObject({ tool_call_id: "call-1" });
+    expect(JSON.stringify(last).match(/data:image\/png/g)).toHaveLength(1);
+    expect(JSON.stringify(last)).toContain("earlier screenshot removed");
+  });
+
+  test("malformed OpenAI arguments become a tool error, and a tools 400 never strips tools", async () => {
+    const bad = mock(() => completion("", { tool_calls: [{ id: "bad", type: "function", function: { name: "open_app", arguments: "{" } }] }));
+    const result = await openai(bad.url).agent(agentRequest).next([], http);
+    expect(result.calls[0]?.error).toContain("Malformed");
+    const rejected = mock((_request, body) => body.tools ? Response.json({ error: { message: "This model does not support tools" } }, { status: 400 }) : completion("plain chat"));
+    const provider = openai(rejected.url);
+    await expect(provider.agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "no_tools" });
+    expect(rejected.bodies).toHaveLength(1);
+    expect(rejected.bodies[0]).toHaveProperty("tools");
+    expect((await provider.chat(request)).text).toBe("plain chat");
+  });
+
+  test.each(["openai", "anthropic"] as const)("%s remembers unsupported tools across instances and permits a refresh", async (preset) => {
+    const server = mock(() => Response.json({ error: { message: "This model does not support tools" } }, { status: 400 }), { modalities: { vision: false } });
+    const settings = { preset, baseUrl: server.url, model: "text-only-tools", apiKey: "test" };
+    await expect(createProvider(settings, noop).agent({ ...agentRequest, vision: false }).next([], http)).rejects.toMatchObject({ kind: "no_tools" });
+    const provider = createProvider(settings, noop);
+    expect(await provider.capabilities(http)).toEqual({ tools: false, vision: false });
+    await expect(provider.agent({ ...agentRequest, vision: false }).next([], http)).rejects.toMatchObject({ kind: "no_tools" });
+    expect(server.bodies).toHaveLength(1);
+    expect(await provider.capabilities(http, true)).toEqual({ tools: true, vision: false });
+  });
+
+  test("vLLM's disabled auto tool choice is remembered", async () => {
+    const server = mock(() => Response.json({ error: { message: '"auto" tool choice requires --enable-auto-tool-choice' } }, { status: 400 }));
+    const provider = openai(server.url);
+    await expect(provider.agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "no_tools" });
+    await expect(openai(server.url).agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "no_tools" });
+    expect(server.bodies).toHaveLength(1);
+  });
+
+  test("compatible vision probes require the actual colors and cache the result", async () => {
+    const server = mock((_request, body) => {
+      expect(Number(body.max_tokens)).toBeGreaterThanOrEqual(1024);
+      return describeProbe(body);
+    });
+    const provider = openai(server.url);
+    expect(await provider.capabilities(http)).toEqual({ tools: true, vision: true });
+    expect(await provider.capabilities(http)).toEqual({ tools: true, vision: true });
+    expect(server.bodies).toHaveLength(1);
+    await provider.capabilities(http, true);
+    expect(server.bodies).toHaveLength(2);
+    const blind = mock(() => completion("I cannot see an image"));
+    expect(await openai(blind.url).capabilities(http)).toEqual({ tools: true, vision: false });
+  });
+
+  test("Ollama reads capabilities and returns tool_name with only the latest screenshot", async () => {
+    const server = mock((request) => new URL(request.url).pathname === "/api/show"
+      ? Response.json({ capabilities: ["tools", "vision"] })
+      : Response.json({ message: { content: "", tool_calls: [{ function: { name: "screenshot", arguments: {} } }] } }));
+    const provider = createProvider({ preset: "ollama", baseUrl: server.url, model: "qwen", apiKey: "" }, noop);
+    expect(await provider.capabilities(http)).toEqual({ tools: true, vision: true });
+    const session = provider.agent(agentRequest);
+    const first = await session.next([], http);
+    const second = await session.next([{ id: first.calls[0]!.id, text: "OK", image }], http);
+    await session.next([{ id: second.calls[0]!.id, text: "OK", image }], http);
+    const messages = transcript.parse(server.bodies.at(-1)).messages;
+    expect(messages.find((message) => message.role === "tool")).toMatchObject({ tool_name: "screenshot" });
+    expect(messages.filter((message) => "images" in message)).toHaveLength(1);
+    expect(server.bodies.at(-1)).toHaveProperty("options.num_ctx", 8192);
+  });
+
+  test("Claude echoes native toolset results and thinking blocks without refusal fallbacks", async () => {
+    const content = [{ type: "thinking", thinking: "reason", signature: "sig" }, { type: "tool_use", id: "native", toolset_name: "computer", name: "screenshot", input: {} }];
+    let n = 0;
+    const server = mock(() => Response.json({ id: "msg", type: "message", role: "assistant", model: "claude-opus-5-5", content: ++n === 1 ? content : [{ type: "text", text: "Done" }], stop_reason: n === 1 ? "tool_use" : "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    const provider = createProvider({ preset: "anthropic", baseUrl: server.url, model: "claude-opus-5-5", apiKey: "test" }, noop);
+    const session = provider.agent(agentRequest);
+    expect((await session.next([], http)).calls[0]).toHaveProperty("toolset", "computer");
+    expect((await session.next([{ id: "native", text: "OK", image }], http)).text).toBe("Done");
+    const messages = transcript.parse(server.bodies[1]).messages;
+    expect(messages.find((message) => message.role === "assistant")?.content).toEqual(content);
+    expect(messages.at(-1)?.content).toEqual([expect.objectContaining({ type: "tool_result", tool_use_id: "native", toolset_name: "computer", content: [expect.objectContaining({ type: "text" }), expect.objectContaining({ type: "image" })] })]);
+    expect(server.bodies[0]).not.toHaveProperty("fallbacks");
+    expect(server.bodies[0]).toHaveProperty("cache_control.type", "ephemeral");
+  });
+
+  test("a rejected Claude toolset retries with custom tools", async () => {
+    const server = mock((_request, body) => JSON.stringify(body.tools).includes("computer_toolset")
+      ? Response.json({ type: "error", error: { type: "invalid_request_error", message: "computer toolset is not supported" } }, { status: 400 })
+      : Response.json({ id: "msg", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "Done" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    const provider = createProvider({ preset: "anthropic", baseUrl: server.url, model: "claude-opus-5-5", apiKey: "test" }, noop);
+    expect((await provider.agent(agentRequest).next([], http)).text).toBe("Done");
+    expect(server.bodies).toHaveLength(2);
+    expect(JSON.stringify(server.bodies[1]?.tools)).not.toContain("toolset");
+    expect(JSON.stringify(server.bodies[1]?.tools)).toContain("type_text");
   });
 });

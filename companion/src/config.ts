@@ -50,6 +50,8 @@ export const ConfigSchema = z.object({
       learnFacts: z.boolean().default(true),
       /** Install new releases from GitHub on their own (they take effect on the next game launch). */
       autoUpdate: z.boolean().default(true),
+      /** Automatic enables control for AI servers on this PC or LAN. */
+      computerControl: z.enum(["auto", "on", "off"]).default("auto"),
     })
     .prefault({}),
   /** Web search Lilith can use for current information. Off until the player picks a backend. */
