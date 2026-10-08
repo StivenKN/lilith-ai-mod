@@ -29,6 +29,7 @@ internal abstract record Incoming;
 internal sealed record ReadyMessage(int V, string Version, string DashboardUrl, HotkeySpec Hotkey, UiStrings Strings) : Incoming;
 internal sealed record SayMessage(string Id, string Text, string Emotion, float Seconds) : Incoming;
 internal sealed record ChatStatusMessage(string Kind, string? Text) : Incoming;
+internal sealed record YieldFocusMessage : Incoming;
 
 internal static class Protocol
 {
@@ -103,6 +104,8 @@ internal static class Protocol
                     return new ChatStatusMessage(
                         root.GetProperty("kind").GetString() ?? "idle",
                         root.TryGetProperty("text", out var text) ? text.GetString() : null);
+                case "yieldFocus":
+                    return new YieldFocusMessage();
                 default:
                     return null;
             }

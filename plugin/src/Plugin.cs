@@ -196,6 +196,9 @@ public sealed class Plugin : BasePlugin
             case ChatStatusMessage status when status.Text is not null:
                 _chat?.SetStatus(status.Text);
                 break;
+            case YieldFocusMessage:
+                _chat?.YieldFocus();
+                break;
         }
     }
 

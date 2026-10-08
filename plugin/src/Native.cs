@@ -62,7 +62,8 @@ internal static class Native
         var job = CreateJobObjectW(IntPtr.Zero, null);
         if (job == IntPtr.Zero) return IntPtr.Zero;
         var info = new JobExtendedLimitInformation();
-        info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+        // Keep the companion tied to the game, but let browsers and apps it starts survive it.
+        info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose | 0x1000; // SILENT_BREAKAWAY_OK
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref info, (uint)Marshal.SizeOf<JobExtendedLimitInformation>()))
         {
             CloseHandle(job);

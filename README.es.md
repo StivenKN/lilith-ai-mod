@@ -27,6 +27,8 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
   vez que abres el juego (puedes desactivarlo en **Juego → Instalación**).
 - **Errores claros.** Si algo falla, Lilith no inventa una excusa: el globo dice qué pasó y cómo
   arreglarlo («La clave de API de OpenAI no es válida…», «Ollama no está abierto…»).
+- **Control del PC.** Pídele que abra apps o enlaces, escriba y use el mouse. Los modelos con
+  visión pueden leer capturas; los demás solo usan teclado y abren apps. Solo Windows x64.
 
 ## Requisitos
 
@@ -71,7 +73,7 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
 
 - Tu configuración, tu clave de API, la memoria y los registros se guardan solo en tu PC, en
   `%APPDATA%\LilithAICompanion`.
-- Con Ollama u otro servidor local, nada sale de tu PC.
+- Con Ollama u otro servidor en este PC, nada sale de tu PC. Un servidor en tu red local recibe los datos por esa red.
 - Con un servicio en línea, se envía a ese servicio: tu mensaje, la conversación reciente, la
   personalidad de Lilith, las notas sobre ti, la hora y tu nombre de jugador. Tu clave solo se envía a
   ese servicio.
@@ -79,7 +81,15 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
   ella elige buscar, nunca tu conversación.
 - Para buscar actualizaciones, el mod le pide a GitHub la lista de versiones cada pocas horas; no
   envía nada sobre ti.
-- El mod no lee tu pantalla, tus ventanas ni tus archivos.
+- El control del PC se activa automáticamente con IA local o de tu red. Con servicios en línea
+  está desactivado hasta que lo actives en **Lilith → Usar tu PC**. Cuando le pidas una tarea,
+  Lilith puede identificar la app enfocada y enviar capturas de la pantalla principal al servidor
+  de IA elegido si el modelo puede ver imágenes. Las capturas solo están en memoria durante el
+  turno, no se guardan en el historial ni en los registros.
+- Sin visión, solo puede abrir apps y enlaces, escribir y presionar teclas. Mueve el mouse o
+  presiona una tecla para detenerla. El prompt le indica que pregunte antes de comprar, enviar
+  mensajes, borrar, ingresar contraseñas o aceptar términos. El código bloquea la entrada de
+  teclado en terminales y herramientas del sistema.
 
 ## Si algo falla
 

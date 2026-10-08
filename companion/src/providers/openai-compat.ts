@@ -3,9 +3,26 @@
 // that names a field drops (or renames) it and retries; the lesson is remembered per model.
 
 import { z } from "zod";
-import type { Preset } from "./presets.ts";
-import { requestJson, trimSlash, withRetry } from "./http.ts";
-import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type Provider } from "./types.ts";
+import { randomInt } from "node:crypto";
+import { computerTools, toolSchema } from "../computer/actions.ts";
+import { bgraToPng } from "../computer/png.ts";
+import { isLocalUrl, type Preset } from "./presets.ts";
+import { awaitWithAbort, requestJson, toolsUnsupported, trimSlash, withRetry, type HttpOptions } from "./http.ts";
+import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type Provider, type ToolCall } from "./types.ts";
+
+const AssistantMessage = z.looseObject({
+  content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }))]).nullish(),
+  reasoning_content: z.string().nullish(),
+  reasoning: z.string().nullish(),
+  refusal: z.string().nullish(),
+  tool_calls: z.array(z.looseObject({ id: z.string(), type: z.literal("function"), function: z.looseObject({ name: z.string(), arguments: z.unknown() }) })).optional(),
+});
+type ImagePart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type Message =
+  | { role: "system" | "user"; content: string }
+  | { role: "user"; content: ImagePart[] }
+  | { role: "tool"; tool_call_id: string; content: string }
+  | (z.infer<typeof AssistantMessage> & { role: "assistant" });
 
 const ChatCompletion = z.object({
   model: z.string().optional(),
@@ -13,12 +30,7 @@ const ChatCompletion = z.object({
     .array(
       z.object({
         finish_reason: z.string().nullish(),
-        message: z.object({
-          content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }))]).nullish(),
-          reasoning_content: z.string().nullish(),
-          reasoning: z.string().nullish(),
-          refusal: z.string().nullish(),
-        }),
+        message: AssistantMessage,
       }),
     )
     .min(1),
@@ -28,6 +40,7 @@ const ModelList = z.object({ data: z.array(z.object({ id: z.string() })) });
 
 /** Per (baseUrl, model) adjustments learned from 400 responses. Lives for the process lifetime. */
 const learned = new Map<string, Set<string>>();
+const visionChecks = new Map<string, Promise<boolean>>();
 
 export interface OpenAiOptions {
   baseUrl: string;
@@ -75,7 +88,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
       quirks.add("max_tokens");
     } else {
       const field = Object.keys(body).find(
-        (key) => !["model", "messages", "stream", "max_tokens", "max_completion_tokens"].includes(key) && message.includes(key),
+        (key) => !["model", "messages", "stream", "max_tokens", "max_completion_tokens", "tools", "tool_choice"].includes(key) && message.includes(key),
       );
       if (!field) return false;
       quirks.add(`drop:${field}`);
@@ -92,6 +105,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
           const json = await withRetry(
             () => requestJson(`${base}/chat/completions`, { headers, body }, request),
             (error, waitMs) => options.onAdjust(`${error.kind}; retrying in ${waitMs} ms`),
+            request.signal,
           );
           return parseCompletion(json, options.model);
         } catch (error) {
@@ -109,7 +123,106 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
         .map((model) => ({ id: model.id.replace(/^models\//, "") }))
         .sort((a, b) => a.id.localeCompare(b.id));
     },
+
+    async capabilities(http, refresh = false): Promise<Capabilities> {
+      if (refresh) { visionChecks.delete(quirkKey); quirks.delete("no-tools"); }
+      let check = visionChecks.get(quirkKey);
+      if (!check) {
+        check = (async () => {
+          // llama.cpp declares modalities without loading images into a text-only model.
+          if (isLocalUrl(base)) {
+            const propsUrl = new URL(base);
+            propsUrl.pathname = propsUrl.pathname.replace(/\/(v1)?\/?$/, "") + "/props";
+            propsUrl.search = new URLSearchParams({ model: options.model }).toString();
+            try {
+              const json = await requestJson(propsUrl.href, { headers }, http);
+              const props = z.object({ modalities: z.object({ vision: z.boolean() }) }).safeParse(json);
+              if (props.success) return props.data.modalities.vision;
+            } catch (error) {
+              if (http.signal?.aborted) throw error;
+              if (!(error instanceof ProviderError) || ["auth", "billing", "rate_limit", "unreachable", "timeout"].includes(error.kind) || [502, 503, 504].includes(error.status ?? 0)) throw error;
+            }
+          }
+          const probe = visionProbe();
+          for (let attempt = 0; ; attempt++) {
+            const body = buildBody({ system: "Describe the supplied image.", turns: [], maxTokens: 1024, temperature: 0, timeoutMs: http.timeoutMs });
+            body.messages = [{ role: "user", content: [{ type: "text", text: "Name the left color and then the right color. Use only two color names separated by a comma." }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(probe.image).toString("base64")}` } }] }];
+            try {
+              const result = parseCompletion(await requestJson(`${base}/chat/completions`, { headers, body }, http), options.model);
+              return (result.text.toLowerCase().match(/\b(red|green|blue|yellow|black|white)\b/g) ?? []).join(" ") === probe.answer;
+            } catch (error) {
+              // A rejected optional setting is unrelated to vision. Learn and retry it first.
+              if (attempt < 3 && error instanceof ProviderError && adjust(error, body)) continue;
+              // Text-only compatible servers also reject images with 404/500 responses.
+              if (error instanceof ProviderError && [400, 404, 415, 422, 500].includes(error.status ?? 0) && !["auth", "billing", "rate_limit", "timeout"].includes(error.kind)) return false;
+              throw error;
+            }
+          }
+        })();
+        visionChecks.set(quirkKey, check);
+      }
+      try { return { tools: !quirks.has("no-tools"), vision: await awaitWithAbort(check, http.signal) }; }
+      catch (error) { if (visionChecks.get(quirkKey) === check) visionChecks.delete(quirkKey); throw error; }
+    },
+
+    agent(request) {
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map((turn): Message => turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content })];
+      return {
+        async next(results, http) {
+          if (quirks.has("no-tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
+          for (const result of results) messages.push({ role: "tool", tool_call_id: result.id, content: `${result.isError ? "Error: " : ""}${result.text}` });
+          const latest = results.findLast((result) => result.image);
+          if (latest?.image) {
+            for (const message of messages) if (message.role === "user" && Array.isArray(message.content)) message.content = [{ type: "text", text: "[earlier screenshot removed]" }];
+            messages.push({ role: "user", content: [{ type: "text", text: "Current primary screen after the actions." }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] });
+          }
+          for (let attempt = 0; ; attempt++) {
+            const body = buildBody({ ...request, timeoutMs: http.timeoutMs });
+            body.messages = messages;
+            body.tools = computerTools(request.vision).map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } }));
+            try {
+              const json = await withRetry(() => requestJson(`${base}/chat/completions`, { headers, body }, http), (error, wait) => options.onAdjust(`${error.kind}; retrying in ${wait} ms`), http.signal);
+              const parsed = ChatCompletion.safeParse(json);
+              if (!parsed.success) throw new ProviderError("bad_response", "Unexpected tool response");
+              const choice = parsed.data.choices[0]!;
+              const result = parseCompletion(json, options.model);
+              if (result.finish === "refusal") throw new ProviderError("refused", "The model declined the computer request");
+              messages.push({ ...choice.message, role: "assistant" });
+              const calls: ToolCall[] = (choice.message.tool_calls ?? []).map((call) => {
+                try {
+                  if (typeof call.function.arguments !== "string") throw new Error("Tool arguments must be a JSON string");
+                  return { id: call.id, name: call.function.name, input: JSON.parse(call.function.arguments) as unknown };
+                } catch { return { id: call.id, name: call.function.name, input: null, error: "Malformed tool arguments. Send a valid JSON object." }; }
+              });
+              return { text: result.text, model: result.model, finish: result.finish, calls };
+            } catch (error) {
+              if (error instanceof ProviderError && toolsUnsupported(error)) {
+                quirks.add("no-tools");
+                throw new ProviderError("no_tools", error.message, error.status);
+              }
+              if (attempt < 3 && error instanceof ProviderError && adjust(error, body)) continue;
+              throw error;
+            }
+          }
+        },
+      };
+    },
   };
+}
+
+function visionProbe() {
+  const colors = [
+    { name: "red", rgb: [255, 0, 0] }, { name: "green", rgb: [0, 255, 0] },
+    { name: "blue", rgb: [0, 0, 255] }, { name: "yellow", rgb: [255, 255, 0] },
+    { name: "black", rgb: [0, 0, 0] }, { name: "white", rgb: [255, 255, 255] },
+  ];
+  const left = colors.splice(randomInt(colors.length), 1)[0]!, right = colors[randomInt(colors.length)]!;
+  const pixels = new Uint8Array(64 * 32 * 4);
+  for (let y = 0; y < 32; y++) for (let x = 0; x < 64; x++) {
+    const color = x < 32 ? left : right, at = (y * 64 + x) * 4;
+    pixels.set([color.rgb[2]!, color.rgb[1]!, color.rgb[0]!, 255], at);
+  }
+  return { image: bgraToPng(pixels, 64, 32), answer: `${left.name} ${right.name}` };
 }
 
 function parseCompletion(json: unknown, model: string): ChatResult {

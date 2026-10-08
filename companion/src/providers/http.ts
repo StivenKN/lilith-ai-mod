@@ -1,10 +1,22 @@
 // Shared HTTP plumbing for the adapters: explicit timeouts, error classification, one retry.
 
 import { ProviderError, type ErrorKind } from "./types.ts";
+import { setTimeout } from "node:timers/promises";
 
 export interface HttpOptions {
   timeoutMs: number;
   signal?: AbortSignal | undefined;
+}
+
+/** Shared capability probes must still let each caller stop waiting with its own signal. */
+export function awaitWithAbort<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return pending;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    void pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 /** Performs a request and returns the parsed JSON body, or throws a classified ProviderError. */
@@ -104,6 +116,13 @@ export function classifyStatus(status: number, message: string): ErrorKind {
   return "bad_request";
 }
 
+/** Invalid tool transcripts and schemas are errors, not evidence that a model lacks tools. */
+export function toolsUnsupported(error: ProviderError): boolean {
+  if ([400, 500].includes(error.status ?? 0) && /\b(tools?|tool_choice)\b.*requires --jinja\b/i.test(error.message)) return true;
+  return error.status === 400 && /\b(tools?|functions?|function calling|tool_choice)\b/i.test(error.message)
+    && /does not support|not supported|unsupported|not available|not implemented|disabled|requires --(?:jinja|enable-auto-tool-choice)/i.test(error.message);
+}
+
 export function parseRetryAfter(header: string | null): number | undefined {
   if (!header) return undefined;
   const seconds = Number(header);
@@ -113,16 +132,18 @@ export function parseRetryAfter(header: string | null): number | undefined {
 }
 
 /** Retries once on transient failures (rate limit, server error), honoring short Retry-After values. */
-export async function withRetry<T>(run: () => Promise<T>, onRetry: (error: ProviderError, waitMs: number) => void): Promise<T> {
+export async function withRetry<T>(run: () => Promise<T>, onRetry: (error: ProviderError, waitMs: number) => void, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
   try {
     return await run();
   } catch (error) {
-    if (!(error instanceof ProviderError)) throw error;
+    signal?.throwIfAborted();
+    if (!(error instanceof ProviderError) || toolsUnsupported(error)) throw error;
     const waitMs =
       error.kind === "rate_limit" ? (error.retryAfterMs ?? 2000) : error.kind === "server" ? 1500 : Number.POSITIVE_INFINITY;
     if (waitMs > 15_000) throw error;
     onRetry(error, waitMs);
-    await Bun.sleep(waitMs);
+    await setTimeout(waitMs, undefined, { signal });
     return run();
   }
 }

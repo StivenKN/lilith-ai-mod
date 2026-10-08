@@ -3,15 +3,20 @@
 // stays loaded between messages. Also exposes the extras the setup wizard needs.
 
 import { z } from "zod";
-import { requestJson, send, trimSlash } from "./http.ts";
-import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type ModelInfo, type Provider } from "./types.ts";
+import { computerTools, toolSchema } from "../computer/actions.ts";
+import { awaitWithAbort, requestJson, send, toolsUnsupported, trimSlash } from "./http.ts";
+import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
 
 const KEEP_ALIVE = "30m";
 const NUM_CTX = 8192;
 
+const OllamaMessage = z.looseObject({
+  content: z.string().default(""), thinking: z.string().optional(),
+  tool_calls: z.array(z.looseObject({ function: z.looseObject({ name: z.string(), arguments: z.unknown() }) })).optional(),
+});
 const ChatResponse = z.object({
   model: z.string().optional(),
-  message: z.object({ content: z.string().default(""), thinking: z.string().optional() }),
+  message: OllamaMessage,
   done_reason: z.string().optional(),
 });
 const Tags = z.object({ models: z.array(z.object({ name: z.string(), size: z.number().optional() })) });
@@ -28,6 +33,7 @@ export type PullProgress = z.infer<typeof PullEvent>;
 export const ollamaBase = (url: string): string => trimSlash(url).replace(/\/(v1|api)$/i, "");
 
 const noThinkModels = new Set<string>();
+const capabilityChecks = new Map<string, Promise<Capabilities>>();
 
 export interface OllamaOptions {
   baseUrl: string;
@@ -37,6 +43,8 @@ export interface OllamaOptions {
 
 export function createOllamaProvider(options: OllamaOptions): Provider {
   const base = ollamaBase(options.baseUrl);
+  const key = `${base}|${options.model}`;
+  let noTools = false;
   return {
     async chat(request: ChatRequest): Promise<ChatResult> {
       for (let attempt = 0; ; attempt++) {
@@ -79,6 +87,67 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
     },
 
     listModels: (timeoutMs) => listOllamaModels(base, timeoutMs),
+
+    async capabilities(http, refresh = false) {
+      if (refresh) { capabilityChecks.delete(key); noTools = false; }
+      let check = capabilityChecks.get(key);
+      if (!check) {
+        check = (async () => {
+          const json = await requestJson(`${base}/api/show`, { body: { model: options.model } }, http);
+          const { capabilities } = z.object({ capabilities: z.array(z.string()).default([]) }).parse(json);
+          return { tools: capabilities.includes("tools"), vision: capabilities.includes("vision") };
+        })();
+        capabilityChecks.set(key, check);
+      }
+      try { const result = await awaitWithAbort(check, http.signal); return { ...result, tools: result.tools && !noTools }; }
+      catch (error) { if (capabilityChecks.get(key) === check) capabilityChecks.delete(key); throw error; }
+    },
+
+    agent(request) {
+      type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns)];
+      let pending: ToolCall[] = [];
+      let sequence = 0;
+      return {
+        async next(results, http) {
+          if (noTools) throw new ProviderError("no_tools", "This Ollama model does not accept tools");
+          for (const result of results) messages.push({ role: "tool", tool_name: pending.find((call) => call.id === result.id)?.name ?? "", content: `${result.isError ? "Error: " : ""}${result.text}` });
+          const latest = results.findLast((result) => result.image);
+          if (latest?.image) {
+            for (const message of messages) if (message.images) { delete message.images; message.content = "[earlier screenshot removed]"; }
+            messages.push({ role: "user", content: "Current primary screen after the actions.", images: [Buffer.from(latest.image).toString("base64")] });
+          }
+          for (let attempt = 0; ; attempt++) {
+            const useThink = !noThinkModels.has(options.model);
+            try {
+              const json = await requestJson(`${base}/api/chat`, { body: {
+                model: options.model, messages, stream: false, ...(useThink ? { think: false } : {}),
+                keep_alive: KEEP_ALIVE,
+                options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature: request.temperature },
+                tools: computerTools(request.vision).map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } })),
+              } }, http);
+              const parsed = ChatResponse.safeParse(json);
+              if (!parsed.success) throw new ProviderError("bad_response", "Unexpected Ollama tool response");
+              messages.push({ ...parsed.data.message, role: "assistant" });
+              pending = (parsed.data.message.tool_calls ?? []).map((call) => ({ id: `ollama-${++sequence}`, name: call.function.name, input: call.function.arguments }));
+              return { calls: pending, text: parsed.data.message.content, model: parsed.data.model ?? options.model, finish: parsed.data.done_reason === "length" ? "length" : "stop" };
+            } catch (error) {
+              if (error instanceof ProviderError && toolsUnsupported(error)) {
+                noTools = true;
+                capabilityChecks.set(key, Promise.resolve({ tools: false, vision: request.vision }));
+                throw new ProviderError("no_tools", error.message, 400);
+              }
+              if (attempt === 0 && useThink && error instanceof ProviderError && error.kind === "bad_request" && /think/i.test(error.message)) {
+                noThinkModels.add(options.model);
+                options.onAdjust(`${options.model} does not accept "think"; retrying without it`);
+                continue;
+              }
+              throw error;
+            }
+          }
+        },
+      };
+    },
   };
 }
 

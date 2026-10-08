@@ -10,6 +10,7 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
         ├─ providers   OpenAI-compatible · Anthropic SDK · Ollama native
         ├─ brain       persona · prompt · reply shaping · paging · memory · speak-first
         ├─ search      DuckDuckGo lite (keyless) · Firecrawl (API key)
+        ├─ computer    Windows x64 FFI · screenshots · input · bounded tool loop
         └─ dashboard   Bun.serve on 127.0.0.1:47321+ → React app (setup wizard, settings, help)
 
 %APPDATA%\LilithAICompanion\   config.json · memory.json · logs\lilith-ai.log
@@ -93,10 +94,65 @@ Defined in `companion/src/protocol.ts` (Zod) and mirrored in `plugin/src/Protoco
 | `state{idle, sleep, busy, interacting, drag, langRaw, playerName}` | `ready{v, version, dashboardUrl, hotkey, strings}` |
 | `hello{v, pluginVersion, gameVersion, unityVersion, bepinexVersion, gameDir, caps}` | `say{id, text, emotion, seconds}` |
 | `chat{text}` | `chatStatus{kind: idle\|thinking\|error, text?}` |
-| `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | |
+| `action{name: "dashboard"}` · `result{id, ok, error?}` · `log{level, msg}` | `yieldFocus{}` |
 
 Bump `PROTOCOL_VERSION` on both sides for breaking changes. On a version mismatch, the companion exits
 with code 2 and the plugin shows "reinstall the mod" instead of restarting it.
+
+## Computer control
+
+`features.computerControl` is `auto`, `on` or `off`. Automatic enables tools for local and LAN AI.
+Speak-first remarks and provider connection tests never get computer tools. Unsupported hosts
+and models without tool support use ordinary chat.
+
+Each adapter owns one typed tool transcript. Claude uses the current
+[computer toolset](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
+on supported models and custom function tools otherwise. Rejected toolsets fall back to custom
+tools. OpenAI-compatible servers preserve extra assistant fields, including Gemini thought
+signatures. Ollama gets capabilities from `/api/show`; local llama.cpp servers expose `/props`.
+Other compatible servers get a cached two-color vision check. Capability checks do not capture
+the desktop. Tool sessions retain the same conversation history as ordinary chat. OpenAI and
+Ollama keep only the latest screenshot; Claude transcripts are append-only. Compatibility errors
+before any action fall back to ordinary chat, which retains empty-reply and repetition retries.
+
+The loop executes batches sequentially, skips later calls after a failure, and caps each task at
+20 actions or 180 seconds after the first tool call, so model loading uses the provider timeout.
+Before the first action, `yieldFocus` hides the plugin popup and returns focus to the previous app.
+A message-only window receives queued Raw Input during computer turns. It ignores Lilith's
+marked input; player keyboard or mouse input aborts actions and model requests. Raw Input does
+not block other apps or silently time out during capture or garbage collection. A new message
+stops a turn that has acted; a superseded turn that has not acted still answers without tools.
+Settings changes also prevent further actions while preserving ordinary pending replies.
+Disconnect and shutdown stop the turn, including provider retry waits. Watcher failures report an error.
+A stopped task needs a new request to continue. Only the user message and final reply enter memory.
+
+`computer/windows.ts` uses `bun:ffi` with user32, gdi32 and kernel32. Screenshots cover the primary
+display, encode opaque RGB PNGs and resize to a maximum edge of 1280 pixels. Input coordinates are
+mapped back to physical pixels and normalized across the virtual desktop. Every capture handle
+is released, and keys and drag buttons are released when a task stops. Start apps are matched
+by localized names and launched with argument arrays, never a shell command supplied by the model.
+App lookup enumerates the Shell apps folder with fixed inline PowerShell commands and works with
+Restricted execution policy without loading script modules or changing the user's policy.
+App and URL launches wait up to five seconds for an identifiable foreground window to change;
+otherwise dependent actions fail. Opening a target already in the foreground can therefore
+report a focus error. Blind keyboard results report the focused executable. Logical mouse buttons
+honor Windows' primary-button setting.
+Keyboard input into terminals, system tools, Run dialogs, Start/search hosts, PowerToys command
+launchers and the popup is blocked; Run and Task Manager app launches, Win+R, Win+X, Win+S, Win+Q,
+bare Win and Ctrl+Esc are refused.
+Explorer's address bar, command fields inside other apps and terminal mouse-paste actions remain
+protected by the prompt. Asking before consequential
+actions is a prompt rule, not a native transaction detector. Input into elevated apps can be
+blocked by Windows; a successful input submission cannot prove that an app handled it.
+
+The companion remains in the plugin's kill-on-close job. `SILENT_BREAKAWAY_OK` lets processes it
+starts survive the game closing. `computerCheck` reports capabilities, and `/api/ping` reports
+whether desktop bindings loaded, including in a compiled exe.
+
+For isolated development, `LILITH_AI_FAKE_DESKTOP=1` uses a gray screenshot and records actions
+without opening apps or injecting input. Use a temporary `LILITH_AI_DATA_DIR`, disable automatic
+updates, run `scripts/mock-llm.ts` on a spare port, and send a message starting with `!` to test a
+tool round trip. The fake desktop is never selected unless that environment variable is set.
 
 ## Game APIs used
 
