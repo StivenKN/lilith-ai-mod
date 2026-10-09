@@ -490,11 +490,11 @@ export class Brain {
       if (epoch !== this.#computerEpoch) return await fallback();
       if (!capabilities.tools) return await fallback();
       const searcher = createSearcher(config.search);
-      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, screen: status.desktop.screen } };
+      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision } };
       let lastStatus = "";
       const result = await runComputerTurn({
         session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(turns, context), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
-        desktop: status.desktop, vision: capabilities.vision, http,
+        desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
         canAct: () => epoch === this.#computerEpoch,
         yieldFocus: () => this.options.send({ type: "yieldFocus" }),
         log: (message) => this.#log.info(message),
@@ -555,6 +555,7 @@ export class Brain {
       case "screenshot": case "zoom": case "cursor": return tr("computer.looking");
       case "openApp": return tr("computer.openingApp", { name: action.name });
       case "openUrl": return tr("computer.openingUrl");
+      case "window": return tr("computer.windows");
       case "type": case "key": return tr("computer.typing");
       case "wait": return tr("computer.waiting");
       default: return tr("computer.clicking");

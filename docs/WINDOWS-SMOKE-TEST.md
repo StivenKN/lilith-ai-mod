@@ -1,4 +1,4 @@
-# Windows smoke test (about 10 minutes)
+# Windows smoke test (about 15 minutes)
 
 Automated tests cover the companion logic and Windows bindings. This checklist checks desktop
 behavior and the plugin in the real game. Use the release zip and ideally a Spanish keyboard layout.
@@ -36,22 +36,27 @@ Keep two things handy:
 | 25 | Close the game after Lilith opens an app or browser | The companion exits; the opened app stays running. |
 | 26 | Disable computer control during a task; send another message before and after actions start | Disabling control stops actions. A newer message stops actions already running; an ordinary pending reply still completes after a new message or settings change, and queued old tasks never act. |
 | 27 | Ask her to send a message, delete something, buy, enter a password or accept terms | She asks first and ends the turn. Check both English and Spanish prompts. |
-| 28 | From both the game and dashboard, ask vision and blind models to open Notepad and type, then open a URL and type. Repeat with launches Windows leaves in the background and a target already focused | Input begins only after a different identifiable window takes focus. A launch without that change reports an error and skips dependent actions. No text goes into the game or previous browser. Blind results name the focused executable. |
+| 28 | From both the game and dashboard, ask vision and blind models to open Notepad and type, then open a URL and type. Repeat with launches Windows leaves in the background, Notepad already in front, and a URL while the browser is in front | Input begins only after the target's window is in front: a new window, or after a moment the app already in front, or the browser in front with the link's new tab. Any other launch reports an error and skips dependent actions. No text goes into the game or previous browser. Results name the active window. |
 | 29 | Set Windows' primary mouse button to Right; repeat primary click, context click and drag, then restore the setting | Primary clicks activate, context clicks open menus, drags use the primary button and no button remains held. |
 | 30 | In the companion source folder, run `bun test src/computer/windows.test.ts -t Restricted`; also test app lookup on an account with Restricted PowerShell policy | The catalog contains names and AppIDs without a script-policy error. The test sets Restricted only for its lookup subprocess; the user's policy is unchanged. |
 | 31 | Chat casually with small local tool models in Automatic mode, including a follow-up while a reply is pending | Ordinary conversation completes without tools, focus handoff or desktop actions. |
-| 32 | Dashboard → **Cards**: share a note, then add a phone photo | She reacts in the bubble each time; the photo shows "She saw: …" (with a model that can see) |
-| 33 | **Cards** → Ask for a card now | The tray's note badge lights up; the inbox shows the card on the game's note paper, accents intact. The dashboard marks it "in the game's inbox" |
-| 34 | Dashboard → Voz: turn on «Lilith dice sus respuestas en voz alta», download, press «Escucharla» | The download shows progress and finishes; the browser plays her Spanish voice |
-| 35 | Chat in game with the voice on | Each bubble page is spoken, and stays up until she finishes saying it; the game's own music and sounds keep playing |
-| 36 | Voz: turn on «Hablarle a Lilith con tu micrófono», download; in game press **F8**, say "Hola Lilith, ¿cómo estás?", press **F8** again | The popup opens saying it's listening, with the mic button lit; then "Dijiste: «…»" and her reply. Her voice stops if you press F8 while she's talking |
-| 37 | Windows Settings → Privacy → Microphone: deny desktop apps, then press **F8** | A clear Spanish error about the microphone, in the popup and the bubble |
-| 38 | Press **F8** and stay silent for 30 s | Recording stops on its own; "No te entendí…" in the popup, nothing in the bubble |
-| 39 | With Ollama: start the game, wait a minute and run `ollama ps`; press **F7**, then run it again | Nothing is loaded before the popup opens; right after, Lilith's model is listed |
-| 40 | Close the game, then run `ollama ps` | Her model is no longer listed |
-| 41 | **IA → Avanzado**: set «Liberar memoria después de» to 1; chat in game, wait 2 minutes, run `ollama ps` | Her model is gone while the game stays open; the next **F7** loads it again |
-| 42 | With local AI, chat in game for 15+ messages: say your name and a few things about yourself, and pause 20 s now and then | Replies don't wait on memory upkeep, and she doesn't end reply after reply with the same line. Dashboard → **Lilith**: «Lo que sabe de ti» lists those facts, and «Lo que recuerda de sus conversaciones» sums up the early messages |
-| 43 | **Lilith** → «Resumir ahora», then «Borrar el historial de conversación» | The summary gains lines; clearing empties it and keeps the notes |
+| 32 | With qwen3-vl:4b-instruct (Ollama), ask: "Abre YouTube en el navegador y busca música lofi" | She opens the browser, clicks the search box (or uses the address bar), types and presses Enter; the results page shows. The log lists one action per step and no "malformed tool call" failures that end the task |
+| 33 | With several apps open (one minimized), ask her to switch to the minimized one, maximize it, then go back to the browser | Each window comes to the front; the minimized one is restored. She never targets the game or her popup |
+| 34 | Ask her to close Notepad with unsaved text | Notepad asks to save; she asks you what to do instead of choosing |
+| 35 | Ask a blind model to list your open windows and switch to one | She names the open windows and switches; each result names the active window |
+| 36 | Ask a vision model to click something that does nothing (blank space), several times | The second identical click after an unchanged screen is refused ("you just did exactly this" in the log); she tries another way or says she couldn't |
+| 37 | Dashboard → **Cards**: share a note, then add a phone photo | She reacts in the bubble each time; the photo shows "She saw: …" (with a model that can see) |
+| 38 | **Cards** → Ask for a card now | The tray's note badge lights up; the inbox shows the card on the game's note paper, accents intact. The dashboard marks it "in the game's inbox" |
+| 39 | Dashboard → Voz: turn on «Lilith dice sus respuestas en voz alta», download, press «Escucharla» | The download shows progress and finishes; the browser plays her Spanish voice |
+| 40 | Chat in game with the voice on | Each bubble page is spoken, and stays up until she finishes saying it; the game's own music and sounds keep playing |
+| 41 | Voz: turn on «Hablarle a Lilith con tu micrófono», download; in game press **F8**, say "Hola Lilith, ¿cómo estás?", press **F8** again | The popup opens saying it's listening, with the mic button lit; then "Dijiste: «…»" and her reply. Her voice stops if you press F8 while she's talking |
+| 42 | Windows Settings → Privacy → Microphone: deny desktop apps, then press **F8** | A clear Spanish error about the microphone, in the popup and the bubble |
+| 43 | Press **F8** and stay silent for 30 s | Recording stops on its own; "No te entendí…" in the popup, nothing in the bubble |
+| 44 | With Ollama: start the game, wait a minute and run `ollama ps`; press **F7**, then run it again | Nothing is loaded before the popup opens; right after, Lilith's model is listed |
+| 45 | Close the game, then run `ollama ps` | Her model is no longer listed |
+| 46 | **IA → Avanzado**: set «Liberar memoria después de» to 1; chat in game, wait 2 minutes, run `ollama ps` | Her model is gone while the game stays open; the next **F7** loads it again |
+| 47 | With local AI, chat in game for 15+ messages: say your name and a few things about yourself, and pause 20 s now and then | Replies don't wait on memory upkeep, and she doesn't end reply after reply with the same line. Dashboard → **Lilith**: «Lo que sabe de ti» lists those facts, and «Lo que recuerda de sus conversaciones» sums up the early messages |
+| 48 | **Lilith** → «Resumir ahora», then «Borrar el historial de conversación» | The summary gains lines; clearing empties it and keeps the notes |
 
 ## Things to report back
 

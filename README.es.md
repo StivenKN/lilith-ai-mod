@@ -40,8 +40,9 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
   vez que abres el juego (puedes desactivarlo en **Juego → Instalación**).
 - **Errores claros.** Si algo falla, Lilith no inventa una excusa: el globo dice qué pasó y cómo
   arreglarlo («La clave de API de OpenAI no es válida…», «Ollama no está abierto…»).
-- **Control del PC.** Pídele que abra apps o enlaces, escriba y use el mouse. Los modelos con
-  visión pueden leer capturas; los demás solo usan teclado y abren apps. Solo Windows x64.
+- **Control del PC.** Pídele que haga cosas en tu PC: abrir apps o enlaces, cambiar de ventana,
+  escribir, hacer clic y desplazarse por una app, paso a paso. Los modelos con visión ven la pantalla
+  después de cada acción; los demás usan el teclado, las apps y las ventanas. Solo Windows x64.
 
 ## Requisitos
 

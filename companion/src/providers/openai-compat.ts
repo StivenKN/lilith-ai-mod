@@ -4,11 +4,11 @@
 
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { computerTools, toolSchema } from "../computer/actions.ts";
+import { computerTools, toolCallsInText, toolSchema } from "../computer/actions.ts";
 import { bgraToPng } from "../computer/png.ts";
 import { isLocalUrl, type Preset } from "./presets.ts";
 import { awaitWithAbort, requestJson, toolsUnsupported, trimSlash, withRetry, type HttpOptions } from "./http.ts";
-import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
+import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
 
 const AssistantMessage = z.looseObject({
   content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }))]).nullish(),
@@ -171,6 +171,8 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
 
     agent(request) {
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map((turn): Message => turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content })];
+      const tools = computerTools(request.vision);
+      let sequence = 0;
       return {
         async next(results, http) {
           if (quirks.has("no-tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
@@ -178,12 +180,12 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
           const latest = results.findLast((result) => result.image);
           if (latest?.image) {
             for (const message of messages) if (message.role === "user" && Array.isArray(message.content)) message.content = [{ type: "text", text: "[earlier screenshot removed]" }];
-            messages.push({ role: "user", content: [{ type: "text", text: "Current primary screen after the actions." }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] });
+            messages.push({ role: "user", content: [{ type: "text", text: latest.caption ?? "Current primary screen after the actions." }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] });
           }
           for (let attempt = 0; ; attempt++) {
-            const body = buildBody({ ...request, timeoutMs: http.timeoutMs });
+            const body = buildBody({ ...request, temperature: stepTemperature(request, results), timeoutMs: http.timeoutMs });
             body.messages = messages;
-            body.tools = computerTools(request.vision).map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } }));
+            body.tools = tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } }));
             try {
               const json = await withRetry(() => requestJson(`${base}/chat/completions`, { headers, body }, http), (error, wait) => options.onAdjust(`${error.kind}; retrying in ${wait} ms`), http.signal);
               const parsed = ChatCompletion.safeParse(json);
@@ -191,14 +193,21 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
               const choice = parsed.data.choices[0]!;
               const result = parseCompletion(json, options.model);
               if (result.finish === "refusal") throw new ProviderError("refused", "The model declined the computer request");
-              messages.push({ ...choice.message, role: "assistant" });
-              const calls: ToolCall[] = (choice.message.tool_calls ?? []).map((call) => {
+              const native = choice.message.tool_calls ?? [];
+              // Local servers whose template parser misses a call leave it in the text. Recorded as
+              // a real tool call, because tool results must follow one.
+              const written = native.length ? { calls: [], text: result.text } : toolCallsInText(result.text, tools.map((tool) => tool.name));
+              const recovered = written.calls.map((call) => ({ ...call, id: `text-call-${++sequence}` }));
+              messages.push(recovered.length
+                ? { role: "assistant", content: written.text || null, tool_calls: recovered.map((call) => ({ id: call.id, type: "function" as const, function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) } })) }
+                : { ...choice.message, role: "assistant" });
+              const calls: ToolCall[] = [...native.map((call) => {
                 try {
                   if (typeof call.function.arguments !== "string") throw new Error("Tool arguments must be a JSON string");
                   return { id: call.id, name: call.function.name, input: JSON.parse(call.function.arguments) as unknown };
                 } catch { return { id: call.id, name: call.function.name, input: null, error: "Malformed tool arguments. Send a valid JSON object." }; }
-              });
-              return { text: result.text, model: result.model, finish: result.finish, calls };
+              }), ...recovered];
+              return { text: written.text, model: result.model, finish: result.finish, calls };
             } catch (error) {
               if (error instanceof ProviderError && toolsUnsupported(error)) {
                 quirks.add("no-tools");

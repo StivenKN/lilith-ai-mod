@@ -5,9 +5,9 @@
 // wizard needs.
 
 import { z } from "zod";
-import { computerTools, toolSchema } from "../computer/actions.ts";
+import { computerTools, toolCallsInText, toolSchema } from "../computer/actions.ts";
 import { awaitWithAbort, requestJson, send, toolsUnsupported, trimSlash } from "./http.ts";
-import { normalizeTurns, ProviderError, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
+import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
 
 /** Minutes a model stays loaded after its last request, unless the settings say otherwise. */
 export const UNLOAD_AFTER_MINUTES = 10;
@@ -117,6 +117,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
     agent(request) {
       type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(({ role, content }) => ({ role, content }))];
+      const tools = computerTools(request.vision);
       let pending: ToolCall[] = [];
       let sequence = 0;
       return {
@@ -126,22 +127,30 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
           const latest = results.findLast((result) => result.image);
           if (latest?.image) {
             for (const message of messages) if (message.images) { delete message.images; message.content = "[earlier screenshot removed]"; }
-            messages.push({ role: "user", content: "Current primary screen after the actions.", images: [Buffer.from(latest.image).toString("base64")] });
+            messages.push({ role: "user", content: latest.caption ?? "Current primary screen after the actions.", images: [Buffer.from(latest.image).toString("base64")] });
           }
+          let temperature = stepTemperature(request, results);
           for (let attempt = 0; ; attempt++) {
             const useThink = !noThinkModels.has(options.model);
             try {
               const json = await requestJson(`${base}/api/chat`, { body: {
                 model: options.model, messages, stream: false, ...(useThink ? { think: false } : {}),
                 keep_alive: keepAlive(options.unloadAfterMinutes),
-                options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature: request.temperature },
-                tools: computerTools(request.vision).map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } })),
+                options: { num_ctx: NUM_CTX, num_predict: request.maxTokens, temperature },
+                tools: tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: toolSchema(tool) } })),
               } }, http);
               const parsed = ChatResponse.safeParse(json);
               if (!parsed.success) throw new ProviderError("bad_response", "Unexpected Ollama tool response");
-              messages.push({ ...parsed.data.message, role: "assistant" });
-              pending = (parsed.data.message.tool_calls ?? []).map((call) => ({ id: `ollama-${++sequence}`, name: call.function.name, input: call.function.arguments }));
-              return { calls: pending, text: parsed.data.message.content, model: parsed.data.model ?? options.model, finish: parsed.data.done_reason === "length" ? "length" : "stop" };
+              const { message } = parsed.data;
+              messages.push({ ...message, role: "assistant" });
+              const native = message.tool_calls ?? [];
+              // Models without Ollama's built-in tool parser can leave the call in the text.
+              const written = native.length ? { calls: [], text: message.content } : toolCallsInText(message.content, tools.map((tool) => tool.name));
+              pending = [
+                ...native.map((call) => ({ name: call.function.name, input: call.function.arguments })),
+                ...written.calls,
+              ].map((call) => ({ ...call, id: `ollama-${++sequence}` }));
+              return { calls: pending, text: written.text, model: parsed.data.model ?? options.model, finish: parsed.data.done_reason === "length" ? "length" : "stop" };
             } catch (error) {
               if (error instanceof ProviderError && toolsUnsupported(error)) {
                 noTools = true;
@@ -151,6 +160,13 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
               if (attempt === 0 && useThink && error instanceof ProviderError && error.kind === "bad_request" && /think/i.test(error.message)) {
                 noThinkModels.add(options.model);
                 options.onAdjust(`${options.model} does not accept "think"; retrying without it`);
+                continue;
+              }
+              // Ollama fails the whole request when the model writes a tool call it can't parse.
+              // That's sampling noise, so ask again, a little warmer, rather than lose the task.
+              if (attempt < 2 && error instanceof ProviderError && error.status === 500 && /invalid character|unexpected end of JSON|cannot unmarshal/i.test(error.message)) {
+                temperature = Math.min(1, temperature + 0.3);
+                options.onAdjust(`${options.model} wrote a malformed tool call; asking again`);
                 continue;
               }
               throw error;

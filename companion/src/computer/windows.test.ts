@@ -20,6 +20,9 @@ test.skipIf(process.platform !== "win32" || process.arch !== "x64")("Windows des
     const png = desktop.capture();
     expect(png[25]).toBe(2);
     expect(await installedApps()).toBeArray();
+    // Window titles, enumeration, DWM cloaking and styles all go through bindings only Windows can check.
+    expect(desktop.foreground().title).toBeString();
+    expect(await desktop.execute({ type: "window", op: "list", title: null }, new AbortController().signal)).toMatch(/^(Open windows, front to back:|No app windows are open\.)/);
     const watch = desktop.watchInput();
     try {
       expect(watch.changed()).toBe(false);

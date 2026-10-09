@@ -1,15 +1,18 @@
 // Win32 x64 bindings. Loaded lazily so unsupported hosts can still run ordinary chat.
-import { dlopen } from "bun:ffi";
+import { dlopen, type Pointer } from "bun:ffi";
 import { checkedUrl, openPath } from "../open.ts";
 import { physicalPoint, screenshotPoint, screenshotSize, type Action, type Point, type Region } from "./actions.ts";
-import { openApp } from "./apps.ts";
+import { browserWindow, describeWindows, matchWindow, openApp, windowOf, type ListedWindow } from "./apps.ts";
 import type { Desktop, InputWatch } from "./desktop.ts";
 import { encodeInputs, INPUT_SIZE, sendCheckedInputs, typeEvents, type InputEvent } from "./input.ts";
 import { parseKeys, parseModifiers, type VirtualKey } from "./keys.ts";
-import { guardAction } from "./guards.ts";
+import { guardAction, ownWindow, terminalWindow } from "./guards.ts";
 import { bgraToPng } from "./png.ts";
 import { playerRawInput, rawInputDevices } from "./raw-input.ts";
-import { waitForLaunchFocus } from "./focus.ts";
+import { waitForLaunchFocus, type FocusedWindow } from "./focus.ts";
+
+/** A top-level window as Win32 hands it to us. Bun returns pointers as numbers or, if large, bigints. */
+type NativeWindow = FocusedWindow & { id: Pointer | bigint };
 
 export function createWindowsDesktop(): Desktop {
   const user = dlopen("user32.dll", {
@@ -28,6 +31,15 @@ export function createWindowsDesktop(): Desktop {
     GetForegroundWindow: { args: [], returns: "ptr" },
     GetWindowThreadProcessId: { args: ["ptr", "ptr"], returns: "u32" },
     GetClassNameW: { args: ["ptr", "ptr", "i32"], returns: "i32" },
+    GetWindowTextW: { args: ["ptr", "ptr", "i32"], returns: "i32" },
+    FindWindowExW: { args: ["ptr", "ptr", "ptr", "ptr"], returns: "ptr" },
+    GetWindow: { args: ["ptr", "u32"], returns: "ptr" },
+    GetWindowLongPtrW: { args: ["ptr", "i32"], returns: "i64" },
+    IsWindowVisible: { args: ["ptr"], returns: "i32" },
+    IsIconic: { args: ["ptr"], returns: "i32" },
+    ShowWindow: { args: ["ptr", "i32"], returns: "i32" },
+    SetForegroundWindow: { args: ["ptr"], returns: "i32" },
+    PostMessageW: { args: ["ptr", "u32", "u64", "i64"], returns: "i32" },
     CreateWindowExW: { args: ["u32", "ptr", "ptr", "u32", "i32", "i32", "i32", "i32", "i64", "ptr", "ptr", "ptr"], returns: "ptr" },
     DestroyWindow: { args: ["ptr"], returns: "i32" },
     RegisterRawInputDevices: { args: ["ptr", "u32", "u32"], returns: "i32" },
@@ -40,6 +52,9 @@ export function createWindowsDesktop(): Desktop {
   let kernel: ReturnType<typeof loadKernel>;
   try { gdi = loadGdi(); } catch (error) { user.close(); throw error; }
   try { kernel = loadKernel(); } catch (error) { gdi.close(); user.close(); throw error; }
+  // Without DWM (unlikely on Windows 10+), cloaked windows such as suspended Store apps get listed too.
+  let dwm: ReturnType<typeof loadDwm> | undefined;
+  try { dwm = loadDwm(); } catch { dwm = undefined; }
   const u = user.symbols;
   const g = gdi.symbols;
   const k = kernel.symbols;
@@ -49,13 +64,13 @@ export function createWindowsDesktop(): Desktop {
   u.SetProcessDpiAwarenessContext(-4n);
   const previousDpi = u.SetThreadDpiAwarenessContext(-4n);
   if (u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext()) !== 2) {
-    user.close(); gdi.close(); kernel.close();
+    user.close(); gdi.close(); kernel.close(); dwm?.close();
     throw new Error("Could not enable physical-pixel desktop coordinates");
   }
   const screen = () => ({ width: u.GetSystemMetrics(0), height: u.GetSystemMetrics(1) });
   if (screen().width <= 0 || screen().height <= 0) {
     if (previousDpi) u.SetThreadDpiAwarenessContext(previousDpi);
-    user.close(); gdi.close(); kernel.close();
+    user.close(); gdi.close(); kernel.close(); dwm?.close();
     throw new Error("No primary display is available");
   }
 
@@ -154,46 +169,107 @@ export function createWindowsDesktop(): Desktop {
     return watch;
   }
 
-  const pid = new Uint32Array(1), name = new Uint16Array(256);
+  const pid = new Uint32Array(1), text = new Uint16Array(512), cloak = new Uint32Array(1);
   const processPath = new Uint16Array(32768), pathSize = new Uint32Array(1);
-  function foreground() {
-    const id = u.GetForegroundWindow();
+  const read = (length: number) => String.fromCharCode(...text.subarray(0, Math.max(0, length)));
+  function describe(id: NativeWindow["id"]): NativeWindow {
     u.GetWindowThreadProcessId(id, pid);
-    const length = u.GetClassNameW(id, name, name.length);
-    const className = String.fromCharCode(...name.subarray(0, length));
+    const className = read(u.GetClassNameW(id, text, text.length));
+    const title = read(u.GetWindowTextW(id, text, text.length));
     const handle = k.OpenProcess(0x1000, 0, pid[0]!);
-    if (!handle) return { id, exe: "", className };
+    if (!handle) return { id, exe: "", className, title };
     try {
       pathSize[0] = processPath.length;
-      if (!k.QueryFullProcessImageNameW(handle, 0, processPath, pathSize)) return { id, exe: "", className };
-      return { id, exe: String.fromCharCode(...processPath.subarray(0, pathSize[0])).split("\\").at(-1) ?? "", className };
+      if (!k.QueryFullProcessImageNameW(handle, 0, processPath, pathSize)) return { id, exe: "", className, title };
+      return { id, exe: String.fromCharCode(...processPath.subarray(0, pathSize[0])).split("\\").at(-1) ?? "", className, title };
     } finally { k.CloseHandle(handle); }
+  }
+  function cursor(): Point {
+    const p = new Int32Array(2);
+    if (!u.GetCursorPos(p)) throw new Error("Could not read cursor position");
+    return screenshotPoint({ x: p[0]!, y: p[1]! }, screen());
+  }
+  function foreground(): FocusedWindow {
+    const id = u.GetForegroundWindow();
+    return id ? describe(id) : { id: null, exe: "", className: "", title: "" };
+  }
+  /**
+   * The windows Alt+Tab shows, front to back, except Lilith's own and terminals or system tools,
+   * which she may not open either. Never by title: a browser tab can mention PowerShell.
+   */
+  function windows(): Array<ListedWindow & NativeWindow> {
+    const found: Array<ListedWindow & NativeWindow> = [];
+    for (let id = u.FindWindowExW(null, null, null, null), n = 0; id && n < 4096; id = u.FindWindowExW(null, id, null, null), n++) {
+      if (!u.IsWindowVisible(id)) continue;
+      if (dwm && dwm.symbols.DwmGetWindowAttribute(id, 14, cloak, 4) === 0 && cloak[0]) continue; // DWMWA_CLOAKED
+      const style = Number(u.GetWindowLongPtrW(id, -20)); // GWL_EXSTYLE
+      // Tool windows and owned popups count only when marked WS_EX_APPWINDOW.
+      if (!(style & 0x40000) && (style & 0x80 || u.GetWindow(id, 4))) continue;
+      const window = describe(id);
+      if (!window.title || ownWindow(window) || terminalWindow(window) || /^(Progman|WorkerW|Shell_TrayWnd)$/.test(window.className)) continue;
+      found.push({ ...window, minimized: !!u.IsIconic(id) });
+    }
+    return found;
+  }
+  async function focus(window: NativeWindow, signal: AbortSignal): Promise<void> {
+    if (u.IsIconic(window.id)) u.ShowWindow(window.id, 9); // SW_RESTORE
+    send([{ type: "nudge" }]);
+    u.SetForegroundWindow(window.id);
+    for (let n = 0; n < 20 && u.GetForegroundWindow() !== window.id; n++) {
+      await Bun.sleep(50);
+      signal.throwIfAborted();
+    }
+    if (u.GetForegroundWindow() !== window.id) throw new Error(`Windows did not bring "${window.title}" to the front. Try clicking it in the taskbar.`);
+  }
+  async function manageWindow(action: Extract<Action, { type: "window" }>, signal: AbortSignal): Promise<string> {
+    const open = windows();
+    if (action.op === "list") return describeWindows(open, u.GetForegroundWindow());
+    const active = u.GetForegroundWindow();
+    // Without a title, only an app window counts: never the desktop or taskbar, where WM_CLOSE means shut down.
+    const target = action.title === null ? open.find((window) => window.id === active) : matchWindow(open, action.title);
+    if (!target) throw new Error("The active window is not an app window. Name the window to act on.");
+    switch (action.op) {
+      case "focus": await focus(target, signal); return `Switched to "${target.title}".`;
+      case "maximize":
+        if (target.id !== active) await focus(target, signal);
+        u.ShowWindow(target.id, 3); // SW_MAXIMIZE
+        return `Maximized "${target.title}".`;
+      case "minimize": u.ShowWindow(target.id, 6); return `Minimized "${target.title}".`; // SW_MINIMIZE
+      case "close":
+        // What its X button does: the app may still ask to save first.
+        if (!u.PostMessageW(target.id, 0x10, 0, 0)) throw new Error(`Could not close "${target.title}". It may be running as administrator.`); // WM_CLOSE
+        return `Asked "${target.title}" to close.`;
+    }
   }
   return {
     get screen() { return screen(); },
     capture,
-    cursor() {
-      const p = new Int32Array(2);
-      if (!u.GetCursorPos(p)) throw new Error("Could not read cursor position");
-      return screenshotPoint({ x: p[0]!, y: p[1]! }, screen());
-    },
+    cursor,
     foreground,
     watchInput,
     async execute(action: Action, signal: AbortSignal) {
       signal.throwIfAborted();
       switch (action.type) {
         case "openApp": case "openUrl": {
-          const before = u.GetForegroundWindow();
-          if (action.type === "openApp") await openApp(action.name, signal);
-          else openPath(checkedUrl(action.url));
-          const focused = await waitForLaunchFocus(before, foreground, signal);
-          return `Opened; focused app: ${focused.exe}`;
+          const before = foreground();
+          let sameWindow: (focused: FocusedWindow) => boolean;
+          if (action.type === "openApp") {
+            const app = await openApp(action.name, signal);
+            sameWindow = (focused) => windowOf(focused, app.Name);
+          } else {
+            openPath(checkedUrl(action.url));
+            // A new tab retitles the browser already in front. Any other app's retitling proves nothing.
+            sameWindow = (focused) => browserWindow(focused) && focused.title !== before.title;
+          }
+          await waitForLaunchFocus(before.id, foreground, signal, { sameWindow });
+          return "Opened.";
         }
+        case "window": return manageWindow(action, signal);
         case "type":
           // Small chunks give the takeover watcher time to run while typing long text.
           for (const char of action.text.replace(/\r\n?/g, "\n")) {
             signal.throwIfAborted();
-            guardAction(action, this.foreground());
+            guardAction(action, foreground());
             send(typeEvents(char, tap));
             await Bun.sleep(1);
           }
@@ -201,7 +277,7 @@ export function createWindowsDesktop(): Desktop {
         case "key":
           for (let n = 0; n < action.repeat; n++) for (const combo of parseKeys(action.combo)) {
             signal.throwIfAborted();
-            guardAction(action, this.foreground());
+            guardAction(action, foreground());
             const held = [...combo.modifiers];
             let target: InputEvent[];
             if ("vk" in combo.key) target = [keyEvent(combo.key, true), keyEvent(combo.key, false)];
@@ -236,12 +312,13 @@ export function createWindowsDesktop(): Desktop {
             } else {
               // Validate both endpoints before pressing the mouse button.
               physicalPoint(action.to, screen());
-              move(action.from);
+              const from = action.from ?? cursor();
+              move(from);
               try {
                 send([{ type: "button", button: "left", down: true }]);
                 for (let n = 1; n <= 12; n++) {
                   signal.throwIfAborted();
-                  move({ x: Math.round(action.from.x + (action.to.x - action.from.x) * n / 12), y: Math.round(action.from.y + (action.to.y - action.from.y) * n / 12) });
+                  move({ x: Math.round(from.x + (action.to.x - from.x) * n / 12), y: Math.round(from.y + (action.to.y - from.y) * n / 12) });
                   await Bun.sleep(20);
                 }
               } finally { send([{ type: "button", button: "left", down: false }]); }
@@ -249,10 +326,10 @@ export function createWindowsDesktop(): Desktop {
           } finally { send(held.reverse().map((key) => keyEvent(key, false))); }
           return;
         }
-        case "screenshot": case "zoom": case "cursor": case "wait": return; // handled by the loop
+        case "screenshot": case "zoom": case "cursor": case "wait": case "finish": return; // handled by the loop
       }
     },
-    close() { activeWatch?.close(); if (previousDpi) u.SetThreadDpiAwarenessContext(previousDpi); user.close(); gdi.close(); kernel.close(); },
+    close() { activeWatch?.close(); if (previousDpi) u.SetThreadDpiAwarenessContext(previousDpi); user.close(); gdi.close(); kernel.close(); dwm?.close(); },
   };
 }
 
@@ -267,6 +344,11 @@ function loadGdi() {
     SetBrushOrgEx: { args: ["ptr", "i32", "i32", "ptr"], returns: "i32" },
     StretchBlt: { args: ["ptr", "i32", "i32", "i32", "i32", "ptr", "i32", "i32", "i32", "i32", "u32"], returns: "i32" },
     GetDIBits: { args: ["ptr", "ptr", "u32", "u32", "ptr", "ptr", "u32"], returns: "i32" },
+  });
+}
+function loadDwm() {
+  return dlopen("dwmapi.dll", {
+    DwmGetWindowAttribute: { args: ["ptr", "u32", "ptr", "u32"], returns: "i32" },
   });
 }
 function loadKernel() {

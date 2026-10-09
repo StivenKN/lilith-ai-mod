@@ -72,12 +72,21 @@ export interface ToolResult {
   id: string;
   text: string;
   image?: Uint8Array;
+  /** Said with the image: adapters that can't put images in tool results send it with the screenshot. */
+  caption?: string;
   isError?: boolean;
 }
 
 export interface AgentRequest extends Pick<ChatRequest, "system" | "turns" | "maxTokens" | "temperature"> {
   vision: boolean;
 }
+
+/**
+ * The first request decides between chatting and acting, at the player's temperature. Once a task
+ * is under way, a small model needs steady coordinates and well-formed calls more than variety.
+ */
+export const stepTemperature = (request: Pick<AgentRequest, "temperature">, results: readonly ToolResult[]): number =>
+  results.length ? Math.min(request.temperature, 0.3) : request.temperature;
 
 export interface AgentStep extends Pick<ChatResult, "text" | "model" | "finish"> {
   calls: ToolCall[];

@@ -430,7 +430,48 @@ describe("computer sessions", () => {
     expect((await provider.agent(agentRequest).next([], http)).text).toBe("Done");
     expect(server.bodies).toHaveLength(2);
     expect(JSON.stringify(server.bodies[1]?.tools)).not.toContain("toolset");
-    expect(JSON.stringify(server.bodies[1]?.tools)).toContain("type_text");
+    expect(JSON.stringify(server.bodies[1]?.tools)).toContain("computer_use");
+  });
+
+  test("Claude error results stay text-only, with the screenshot after them", async () => {
+    const server = mock(() => Response.json({ id: "msg", type: "message", role: "assistant", model: "claude-sonnet-4-5", content: [{ type: "text", text: "Done" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    const session = createProvider({ preset: "anthropic", baseUrl: server.url, model: "claude-sonnet-4-5", apiKey: "test" }, noop).agent(agentRequest);
+    await session.next([{ id: "refused", text: "Not executed: look first", image, caption: "This is the screen now.", isError: true }], http);
+    expect(transcript.parse(server.bodies[0]).messages.at(-1)?.content).toEqual([
+      { type: "tool_result", tool_use_id: "refused", is_error: true, content: [{ type: "text", text: "Not executed: look first" }] },
+      expect.objectContaining({ type: "image" }), { type: "text", text: "This is the screen now." },
+    ]);
+  });
+
+  test("Ollama asks again when the model writes a tool call it can't parse, then acts cooler with the task beside the screen", async () => {
+    let chats = 0;
+    const server = mock(() => ++chats === 1
+      ? Response.json({ error: "invalid character '}' looking for beginning of object key string" }, { status: 500 })
+      : Response.json({ message: { content: "", tool_calls: [{ function: { name: "computer_use", arguments: { action: "screenshot" } } }] } }));
+    const session = createProvider({ preset: "ollama", baseUrl: server.url, model: "qwen3-vl", apiKey: "" }, noop).agent(agentRequest);
+    const first = await session.next([], http);
+    expect(first.calls[0]).toMatchObject({ name: "computer_use", input: { action: "screenshot" } });
+    await session.next([{ id: first.calls[0]!.id, text: "OK", image, caption: "Your host asked: open Notepad" }], http);
+    expect(server.bodies.map((body) => z.object({ options: z.object({ temperature: z.number() }) }).parse(body).options.temperature)).toEqual([0.8, 1, 0.3]);
+    expect(transcript.parse(server.bodies.at(-1)).messages.at(-1)).toMatchObject({ role: "user", content: "Your host asked: open Notepad" });
+    const broken = mock(() => Response.json({ error: "unexpected end of JSON input" }, { status: 500 }));
+    await expect(createProvider({ preset: "ollama", baseUrl: broken.url, model: "qwen3-vl", apiKey: "" }, noop).agent(agentRequest).next([], http)).rejects.toMatchObject({ kind: "server" });
+    expect(broken.bodies).toHaveLength(3);
+  });
+
+  test.each(["openai", "ollama"] as const)("%s recovers a tool call left in the reply text", async (preset) => {
+    const text = '<tool_call>\n{"name": "open_app", "arguments": {"name": "Notepad"}}\n</tool_call>';
+    const server = mock(() => preset === "ollama" ? Response.json({ message: { content: text } }) : completion(text));
+    const session = createProvider({ preset, baseUrl: server.url, model: "text-calls", apiKey: "test" }, noop).agent(agentRequest);
+    const first = await session.next([], http);
+    expect(first).toMatchObject({ text: "", calls: [{ name: "open_app", input: { name: "Notepad" } }] });
+    await session.next([{ id: first.calls[0]!.id, text: "Opened." }], http);
+    const messages = transcript.parse(server.bodies.at(-1)).messages;
+    if (preset === "openai") {
+      // Tool results must follow a real tool call, so the recovered one is recorded as such.
+      expect(messages.at(-2)).toMatchObject({ role: "assistant", tool_calls: [{ id: first.calls[0]!.id, function: { name: "open_app" } }] });
+      expect(messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: first.calls[0]!.id });
+    } else expect(messages.at(-1)).toMatchObject({ role: "tool", tool_name: "open_app" });
   });
 });
 
