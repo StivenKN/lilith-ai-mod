@@ -43,6 +43,11 @@ answers in her own speech bubble, in character, in your language, and remembers 
 - **Computer control.** Ask Lilith to do things on your PC: open apps or links, switch between
   windows, type, click and scroll through an app, step by step. Vision models see the screen after
   every action; other models stick to the keyboard, apps and windows. Windows x64 only.
+- **Browser extension** (optional, for Chrome, Edge, Brave and other Chromium browsers). She uses
+  websites by their numbered buttons and fields instead of the mouse, in your browser with your
+  logins: much more reliable with small local AI, and even models that can't see can browse. She
+  opens pages in her own "Lilith" tab group while you keep using your PC. Install it once from
+  **Lilith → Using your PC → Browser**.
 
 ## Install
 
@@ -78,6 +83,14 @@ Models without vision can only open apps and links, type and press keys. Move th
 a key to stop her. The prompt tells her to ask before purchases, sending messages, deletion,
 password entry or accepting terms. Terminal and system-tool keyboard input is blocked in code.
 
+With the browser extension, computer control can also read and use web pages: the text and the
+buttons and fields of the pages she uses, and the titles of the tabs in that window, go to the
+selected AI server (and a picture of the tab, if its model can see). She starts on the tab you're
+looking at, so "what does this page say?" works. In code, she never reads or types passwords, never
+opens her own settings page or browser pages (`chrome://`), uploads no files and only closes tabs she
+opened. The extension talks only to Lilith on this PC, after both prove they share a secret kept in
+your data folder. To stop her, press **Cancel** on the bar where the browser says it's being debugged.
+
 Pictures you share for her cards are the only files the mod reads for them, and only the ones you
 pick. They are shrunk and re-encoded in your browser before saving, which also removes hidden details
 such as GPS location. With an online AI, each picture is sent once so she can see it; after that,
@@ -101,6 +114,7 @@ conversations), and a live log. The **Game** tab shows which mod features work i
 
 ```
 companion/   TypeScript (Bun): setup wizard, dashboard, AI providers, persona, memory → one .exe
+  extension/ Chromium browser extension (MV3, thin): the exe carries it and writes it out
 plugin/      C# BepInEx 6 IL2CPP plugin (thin): bubble, chat window, hotkey, game state
 packaging/   BepInEx.cfg shipped with releases
 docs/        BUILDING.md · ARCHITECTURE.md · WINDOWS-SMOKE-TEST.md

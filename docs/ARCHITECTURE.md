@@ -11,10 +11,13 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
         ├─ brain       persona · prompt · reply shaping · paging · memory · speak-first
         ├─ search      DuckDuckGo lite (keyless) · Firecrawl (API key)
         ├─ computer    Windows x64 FFI · screenshots · input · bounded tool loop
+        ├─ browser     the browser extension's connections · page snapshots · element numbers
         ├─ voice       Piper (speech) · whisper.cpp (recognition), short-lived local processes
         └─ dashboard   Bun.serve on 127.0.0.1:47321+ → React app (setup wizard, settings, help)
+             ▲ WebSocket /api/browser
+      Chrome / Edge / Brave ─ extension (MV3)    companion/extension/, loaded unpacked from the data folder
 
-%APPDATA%\LilithAICompanion\   config.json · memory.json · keepsakes.json · keepsakes\*.jpg · logs\lilith-ai.log · voice\
+%APPDATA%\LilithAICompanion\   config.json · memory.json · keepsakes.json · keepsakes\*.jpg · logs\lilith-ai.log · voice\ · browser-extension\
 ```
 
 ## Why it's split this way
@@ -227,6 +230,8 @@ trained on. Defined in `computer/actions.ts`.
 - **`open_app`**, **`open_url`**, and **`window`** (`list`, `focus`, `maximize`, `minimize`,
   `close`): finding an app or window by name is more reliable for a small model than finding it
   on screen.
+- **`browser`**, while the browser extension is connected; `open_url` then opens a tab in it. See
+  [Browser](#browser).
 - Small models drift from a schema, and each rejected call costs a step. So parsing accepts the
   usual near misses: an action called as a tool of its own, `click` for `left_click`, points as
   `[x, y]`, `{x, y}` or `"(x, y)"`, keys as an array or a string, pyautogui key names (`pgdn`,
@@ -283,16 +288,18 @@ empty-reply and repetition retries.
 
 ### The loop
 
-`computer/agent.ts` executes batches sequentially, skips later calls after a failure, and caps each
-task at 40 actions or 8 minutes after the first tool call, so model loading uses the provider
-timeout. Before the first action, `yieldFocus` hides the plugin popup and returns focus to the
+`computer/agent.ts` executes batches sequentially and skips later calls after a failure. A task has
+no action or time limit: it goes on until the model replies, the player stops it (any input during
+desktop actions, or Cancel on the browser's debugging bar), a new message supersedes it, or the
+same unchanged action is tried a third time (see below). Each model request keeps its own timeout.
+Before the first desktop action, `yieldFocus` hides the plugin popup and returns focus to the
 previous app.
 
 With custom tools, the model gets feedback after every batch, which a small model needs to notice a
 missed click instead of claiming success:
 - One screenshot, after 400 ms (1 s after a launch or window switch). Its caption restates the
-  host's request and how many actions are left, since by then the request may have scrolled far up
-  the transcript, or out of an 8k context.
+  host's request, since by then it may have scrolled far up the transcript, or out of an 8k
+  context.
 - The active window's title and app.
 - "The screen did not change", when the screenshot is identical to the previous one.
 
@@ -301,8 +308,9 @@ Two guards turn a small model's typical mistakes into a message instead of a wro
   batch changed it, are refused, and the new screenshot comes with the error.
 - An action identical to the previous one, after which the screen did not change, is refused with a
   nudge to try another way. Waiting again is exempt: a slow app often looks the same while it loads.
-  A small model can ignore the nudge and retry until the action cap, so the third refusal ends the
-  task, and the model is asked to tell its host what it managed and where it got stuck.
+  A small model can ignore the nudge and retry forever, since tasks have no action limit, so the
+  third refusal ends the task, and the model is asked to tell its host what it managed and where it
+  got stuck.
 
 `terminate` or `answer` ends the task: the model is asked for its reply, and further calls end the
 turn with the answer as the reply.
@@ -360,6 +368,90 @@ For isolated development, `LILITH_AI_FAKE_DESKTOP=1` uses a gray screenshot and 
 without opening apps or injecting input. Use a temporary `LILITH_AI_DATA_DIR`, disable automatic
 updates, run `scripts/mock-llm.ts` on a spare port, and send a message starting with `!` to test a
 tool round trip. The fake desktop is never selected unless that environment variable is set.
+
+## Browser
+
+An optional Chromium extension lets her use websites by their elements instead of the screen.
+Defined in `companion/src/browser/` and `companion/extension/`. A 4B model picks
+`[12] button "Search"` from a list far more reliably than a spot on a screenshot, and a model that
+can't see can browse at all. The extension stays as thin as the plugin: transport, pairing and
+primitives (look at a tab, click element 12 of document D, type, press keys). Wording, guards and
+formatting are in the companion, under `bun test`.
+
+```
+background.js  WebSocket ⇄ /api/browser ──► browser/hub.ts      pairing, connections, calls
+               chrome.debugger, tabs, groups browser/session.ts  one turn: tab, element numbers, guards, wording
+page.js        injected on demand            browser/format.ts   raw page facts → the page she reads
+```
+
+- **Installing.** The exe carries the extension: `extension/build.ts` writes
+  `dist/browser-extension.txt`, which `build.ts` embeds. At start, the companion writes it to
+  `browser-extension\` in the data folder when it's missing or older (never downgrading), with
+  `VERSION` last. The player loads that folder unpacked once. An older running extension is told to
+  reload itself from it, once per version. Developer mode must stay on: with it off, Chrome turns
+  unpacked extensions off (`unsupportedDeveloperExtension`).
+- **Finding companions.** Each companion lists its port in the folder's `companions.json`. It drops
+  ports that stopped answering, lists itself again every minute (two starting at once can lose an
+  entry) and unlists itself on exit. The extension reads the file when it starts, every 30 seconds
+  (an alarm wakes it) and when its button is clicked; an unpacked extension reads its files fresh.
+  Knocking on all 20 dashboard ports instead put an error on chrome://extensions for every closed
+  one, every 30 seconds.
+- **Pairing.** 127.0.0.1 is shared by every Windows user, and the extension's ID is public (pinned
+  by the manifest's `key`). So the upgrade checks the Host header and the Origin
+  (`chrome-extension://<id>`, which webpages can't fake), then both sides prove they know the
+  secret in the folder's `pairing.json`: HMAC-SHA256 over the side's role, both nonces and the
+  port the extension dialed. The companion proves first, so a stranger on the port learns nothing,
+  and the port keeps a stranger from relaying our handshake to the real companion. A port is listed
+  only while a companion answers its ping there. An extension that hangs up on the companion's
+  proof, or sends a wrong one, makes the dashboard say it isn't paired.
+- **A turn.** While the extension is connected, the tool turn offers the `browser` tool and
+  `open_url` opens a tab in her "Lilith" tab group. With two browsers, the one focused last gets
+  the turn. Browser actions go through Chrome's debugger protocol: real clicks and typing that
+  never touch the player's mouse. So they leave the popup up and don't start the input watch, and
+  neither does waiting; the player keeps using the PC. Desktop actions still do both. Chrome shows
+  its "is debugging this browser" bar from her first input until the turn ends. Cancel there stops
+  her: the extension drops her queued calls and won't attach again until the turn ends.
+- **Tabs in the background.** Looking, reading, keys and tab pictures work in a tab that isn't the
+  one shown, so she doesn't take the player's tab away. A hidden tab drops mouse input, though:
+  for a click, clicking into a field or scrolling, her tab comes to the front of its window.
+- **Calls.** One at a time, in order. Each carries a deadline (the companion's own timeout), and a
+  stopped turn cancels its pending ones. So nothing the model gave up on, like a second form
+  submission, happens late.
+- **What she sees.** A turn starts on the tab the player is on, the active tab of the last-focused
+  window, so "what does this page say?" works. After every batch that used the browser, the result
+  carries the page instead of a screenshot: tabs (numbered, hers marked), address, an open dialog's
+  elements first, then what's on screen, then what's further down, and headings, in about 2,000
+  characters. `read` swaps the elements for the page's text from where it's scrolled to. Models
+  that see also get a picture of the tab, at most 1024 px wide, with nothing drawn on it. OpenAI
+  and Ollama transcripts keep only the latest page, as with screenshots, and a text-only page stays
+  a plain string.
+- **Element numbers.** The page script numbers interactive elements per document, stable while an
+  element lives, so one batch can fill several fields and click. A number she was never shown is
+  refused before it reaches the browser. One from a page that has since been replaced is refused
+  by the page ("a new page loaded since you last saw it"). An element under another one (a cookie
+  wall) is refused naming the cover, which gets a number. After a page picture, screen coordinates
+  are refused as guesses. A call with a ref and no coordinate goes to the browser whatever the tool
+  is called: taken as a desktop click, `{"name": "click", "arguments": {"ref": 12}}` would land
+  wherever the cursor is. Playwright MCP's and browser-use's names are accepted.
+- **Acting.** `type` clicks the field, selects its text and inserts the new text. On a dropdown it
+  chooses the option by its words (accents and case ignored) or lists the real options. Keys go to
+  the page, not Chrome's window, so browser shortcuts are refused with what to use instead. A click
+  that opens a tab takes her there, into her group. Dialogs her actions open (alert, confirm) are
+  dismissed and reported.
+- **Guards in code.**
+  - Only http(s) pages, and never the dashboard, on any loopback name and dashboard port. That
+    holds for the desktop `open_url` too: a tab shares the dashboard's saved login, so a page could
+    otherwise talk her into changing the AI server.
+  - Password values never leave the page, and password fields refuse text.
+  - File choosers are refused, and she only closes tabs in her group.
+  - Browser pages and the Web Store, which no extension may enter, are reported as such.
+- **Hidden windows.** Chrome may not paint a window covered by others. A tab picture that takes
+  more than 3 seconds is skipped, and the page text still arrives. A click checks that it reached
+  its element, and otherwise clicks it from the page.
+
+For development, run `bun src/main.ts --dev`, which rewrites the folder from source on every start,
+then load `browser-extension\` from your `LILITH_AI_DATA_DIR` unpacked and reload it after changes.
+`scripts/mock-llm.ts` plays a small model browsing when a message starts with `!b <url>`.
 
 ## Game APIs used
 
@@ -432,4 +524,6 @@ The dashboard is a local server that holds API keys, so it is locked down:
   companion, whose token doesn't match, so the dashboard stays locked. Port sharing is off, and a
   port that already answers is skipped before binding, whatever the platform does.
 - RPC calls must be JSON POSTs.
+- `/api/browser` takes no cookie: it upgrades only for the pinned extension's Origin, which then has
+  to prove it knows the pairing secret (see [Browser](#browser)).
 - API keys are never sent back to the browser in full, and are redacted from logs and reports.

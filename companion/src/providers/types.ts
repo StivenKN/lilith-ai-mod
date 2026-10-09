@@ -72,13 +72,17 @@ export interface ToolResult {
   id: string;
   text: string;
   image?: Uint8Array;
-  /** Said with the image: adapters that can't put images in tool results send it with the screenshot. */
+  /** The browser page after the actions (browser/format.ts). OpenAI and Ollama keep only the latest one, as with screenshots. */
+  page?: string;
+  /** Said with the image or page: adapters that can't put images in tool results send it with them. */
   caption?: string;
   isError?: boolean;
 }
 
 export interface AgentRequest extends Pick<ChatRequest, "system" | "turns" | "maxTokens" | "temperature"> {
   vision: boolean;
+  /** The browser extension is connected: the `browser` tool is offered. */
+  browser: boolean;
 }
 
 /**

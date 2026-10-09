@@ -43,6 +43,11 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
 - **Control del PC.** Pídele que haga cosas en tu PC: abrir apps o enlaces, cambiar de ventana,
   escribir, hacer clic y desplazarse por una app, paso a paso. Los modelos con visión ven la pantalla
   después de cada acción; los demás usan el teclado, las apps y las ventanas. Solo Windows x64.
+- **Extensión del navegador** (opcional, para Chrome, Edge, Brave y otros navegadores Chromium). Usa
+  los sitios web por sus botones y campos numerados en vez del mouse, en tu navegador y con tus
+  sesiones iniciadas: mucho más fiable con IA local pequeña, e incluso los modelos que no ven pueden
+  navegar. Abre páginas en su propio grupo de pestañas «Lilith» mientras sigues usando tu PC. Instálala una
+  vez desde **Lilith → Usar tu PC → Navegador**.
 
 ## Requisitos
 
@@ -108,6 +113,15 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
   presiona una tecla para detenerla. El prompt le indica que pregunte antes de comprar, enviar
   mensajes, borrar, ingresar contraseñas o aceptar términos. El código bloquea la entrada de
   teclado en terminales y herramientas del sistema.
+- Con la extensión del navegador, el control del PC también puede leer y usar páginas web: el texto
+  y los botones y campos de las páginas que usa, y los títulos de las pestañas de esa ventana, se
+  envían al servidor de IA elegido (y una imagen de la pestaña, si su modelo puede ver). Empieza en
+  la pestaña que estás mirando, así que «¿qué dice esta página?» funciona. En el código, nunca lee ni
+  escribe contraseñas, nunca abre su propia página de configuración ni páginas del navegador
+  (`chrome://`), no sube archivos y solo cierra pestañas que ella abrió. La extensión solo habla con
+  la Lilith de este PC, después de que ambas demuestran que comparten un secreto guardado en tu
+  carpeta de datos. Para detenerla, pulsa **Cancelar** en la barra donde el navegador avisa que se
+  está depurando.
 - Las fotos que compartes para sus tarjetas son los únicos archivos que el mod lee para ellas, y solo
   las que tú eliges. Tu navegador las achica y las vuelve a codificar antes de guardarlas, lo que
   también les quita datos ocultos como la ubicación GPS. Con una IA en línea, cada foto se envía una

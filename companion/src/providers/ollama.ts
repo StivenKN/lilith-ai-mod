@@ -117,17 +117,27 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
     agent(request) {
       type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(({ role, content }) => ({ role, content }))];
-      const tools = computerTools(request.vision);
+      const tools = computerTools(request.vision, request.browser);
       let pending: ToolCall[] = [];
       let sequence = 0;
+      // The latest screenshot or page. The one before is blanked: each costs as much context as a long reply.
+      let observation: Message | undefined;
       return {
         async next(results, http) {
           if (noTools) throw new ProviderError("no_tools", "This Ollama model does not accept tools");
           for (const result of results) messages.push({ role: "tool", tool_name: pending.find((call) => call.id === result.id)?.name ?? "", content: `${result.isError ? "Error: " : ""}${result.text}` });
-          const latest = results.findLast((result) => result.image);
-          if (latest?.image) {
-            for (const message of messages) if (message.images) { delete message.images; message.content = "[earlier screenshot removed]"; }
-            messages.push({ role: "user", content: latest.caption ?? "Current primary screen after the actions.", images: [Buffer.from(latest.image).toString("base64")] });
+          const latest = results.findLast((result) => result.image || result.page);
+          if (latest) {
+            if (observation) {
+              observation.content = `[earlier ${observation.images ? "screenshot" : "page"} removed]`;
+              delete observation.images;
+            }
+            observation = {
+              role: "user",
+              content: [latest.page, latest.caption ?? "Current primary screen after the actions."].filter(Boolean).join("\n\n"),
+              ...(latest.image ? { images: [Buffer.from(latest.image).toString("base64")] } : {}),
+            };
+            messages.push(observation);
           }
           let temperature = stepTemperature(request, results);
           for (let attempt = 0; ; attempt++) {

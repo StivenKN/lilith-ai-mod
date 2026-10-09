@@ -326,7 +326,7 @@ export function createWindowsDesktop(): Desktop {
           } finally { send(held.reverse().map((key) => keyEvent(key, false))); }
           return;
         }
-        case "screenshot": case "zoom": case "cursor": case "wait": case "finish": return; // handled by the loop
+        case "screenshot": case "zoom": case "cursor": case "wait": case "finish": case "browser": return; // handled by the loop
       }
     },
     close() { activeWatch?.close(); if (previousDpi) u.SetThreadDpiAwarenessContext(previousDpi); user.close(); gdi.close(); kernel.close(); dwm?.close(); },

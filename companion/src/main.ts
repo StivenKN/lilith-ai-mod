@@ -6,6 +6,10 @@
 import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Brain } from "./brain.ts";
+import { extensionFiles } from "./browser/embedded.ts";
+import { BrowserHub } from "./browser/hub.ts";
+import { installExtension, listCompanion } from "./browser/install.ts";
+import { randomHex } from "./browser/shared.ts";
 import { startBridge } from "./bridge.ts";
 import { ConfigStore, readTextFile, writeAtomic } from "./config.ts";
 import { Keepsakes } from "./keepsakes.ts";
@@ -14,7 +18,7 @@ import { Memory } from "./memory.ts";
 import { dataPaths } from "./paths.ts";
 import { openPath as openWithDefaultHandler } from "./open.ts";
 import type { CompanionMessage } from "./protocol.ts";
-import { APP_NAME, startServer, type AppContext } from "./server.ts";
+import { APP_NAME, companionAt, startServer, type AppContext } from "./server.ts";
 import { Updater } from "./updater.ts";
 import { Voice } from "./voice/index.ts";
 import pkg from "../package.json" with { type: "json" };
@@ -79,6 +83,10 @@ async function main(): Promise<void> {
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
   const keepsakes = await Keepsakes.load(paths.keepsakes, paths.pictures, (message) => log.warn(message));
   const voice = new Voice(paths.voice, logger.scope("voice"));
+  // The extension folder the player loads in their browser, kept current. Without it she just has no browser tool.
+  const pairing = await installExtension(paths.browserExtension, VERSION, extensionFiles, logger.scope("browser"), mode === "dev")
+    .catch((error: unknown) => { log.warn(`could not write the browser extension: ${errorMessage(error)}`); return null; });
+  const browser = new BrowserHub({ secret: pairing?.secret ?? randomHex(32), version: VERSION, log: logger.scope("browser") });
 
   let bridge: { send: (message: CompanionMessage) => void } | null = null;
   let dashboardUrl = "";
@@ -94,6 +102,7 @@ async function main(): Promise<void> {
     openDashboard: () => openPath(dashboardUrl),
     onFatal: (reason) => shutdown(2, reason),
     systemLocale: Intl.DateTimeFormat().resolvedOptions().locale,
+    browser,
   });
 
   const exeDir = dirname(process.execPath);
@@ -113,6 +122,7 @@ async function main(): Promise<void> {
     keepsakes,
     logger,
     brain,
+    browser,
     updater,
     voice,
     paths,
@@ -122,11 +132,18 @@ async function main(): Promise<void> {
   });
   dashboardUrl = server.loginUrl;
   await writeAtomic(paths.instance, JSON.stringify({ pid: process.pid, port: server.port, loginUrl: server.loginUrl, mode }));
+  // Where the browser extension finds this companion.
+  const listInExtension = (leaving = false) => listCompanion(paths.browserExtension, server.port, companionAt, leaving)
+    .catch((error: unknown) => log.warn(`could not list this companion for the browser extension: ${errorMessage(error)}`));
+  await listInExtension();
+  const relist = setInterval(() => void listInExtension(), 60_000);
   brain.start();
   if (mode !== "dev") updater.start(mode === "setup" ? 0 : undefined);
 
   async function shutdown(code: number, reason: string): Promise<never> {
     log.info(`shutting down: ${reason}`);
+    clearInterval(relist);
+    await listInExtension(true);
     await brain.stop();
     updater.stop();
     config.close();

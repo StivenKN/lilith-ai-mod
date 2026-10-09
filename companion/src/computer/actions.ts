@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BrowserAction } from "../browser/session.ts";
 import type { ToolCall, ToolSpec } from "../providers/types.ts";
 import type { MouseButton } from "./input.ts";
 import { parseKeys } from "./keys.ts";
@@ -39,6 +40,8 @@ export type Action =
   | { type: "openApp"; name: string }
   | { type: "openUrl"; url: string }
   | { type: "window"; op: WindowOp; title: string | null }
+  /** Done in the browser by the extension, on the page's elements (browser/session.ts). */
+  | { type: "browser"; op: BrowserAction }
   /** The model says the task is over, with any answer it gave. Nothing happens on the desktop. */
   | { type: "finish"; answer: string };
 
@@ -106,6 +109,63 @@ function computerUse(vision: boolean): ToolSpec {
   };
 }
 
+// The browser tool follows computer_use's shape, one function and an `action`, so a small model
+// meets one convention. Elements are named by the numbers in the page it gets after each action:
+// a 4B model picks [12] from a list far more reliably than a spot on a screenshot, and a model
+// without vision can browse at all.
+const browserActions = {
+  click: "Click element `ref`: a link, button, checkbox, tab or menu item.",
+  type: "Replace the text of field `ref` with `text` (without `ref`, type into the focused field). In a dropdown list, choose the option named `text`. Set `submit` to press Enter afterwards, as in a search box.",
+  key: 'Press keys on the page, such as ["escape"], ["tab"] or ["ctrl", "a"].',
+  scroll: "Scroll the page `direction` by about one screen.",
+  read: "Get the page's text from where it is scrolled to, to read it or answer about it.",
+  back: "Go back to the previous page in this tab.",
+  switch_tab: "Show tab number `tab`.",
+  close_tab: "Close tab number `tab`, or the current one. Only tabs you opened.",
+} as const;
+type BrowserActionName = keyof typeof browserActions;
+const browserActionNames = Object.keys(browserActions) as BrowserActionName[];
+
+const browserTool: ToolSpec = {
+  name: "browser",
+  description: [
+    "Use the web browser through the elements of its page. Inside a webpage this is more reliable than the mouse, and it works without seeing the screen.",
+    '* After each action you get the page: its tabs, its address and its elements, each with a number, like [12] button "Search". Pass that number as `ref`.',
+    "* The numbers stay valid while the page is open, so you can fill several fields and click in one go. Elements further down are listed too and can be used directly.",
+    "* Open a website with open_url.",
+  ].join("\n"),
+  input: z.object({
+    action: z.enum(browserActionNames).describe(`The action to perform. The available actions are:\n${browserActionNames.map((name) => `* \`${name}\`: ${browserActions[name]}`).join("\n")}`),
+    ref: z.number().int().optional().describe("The element's number from the page, like 12 for [12]. Required by `action=click`; the field to fill for `action=type`."),
+    text: z.string().optional().describe("Required only by `action=type`."),
+    submit: z.boolean().optional().describe("Press Enter after typing. Only for `action=type`."),
+    keys: z.array(z.string()).optional().describe("Required only by `action=key`."),
+    direction: z.enum(["up", "down"]).optional().describe("Required only by `action=scroll`."),
+    tab: z.number().int().optional().describe("A tab's number from the top of the page. Required by `action=switch_tab`."),
+  }),
+};
+
+/** Browser actions as small models write them: Playwright MCP's names, browser-use's, and plain verbs. */
+const browserAliases = new Map<string, BrowserActionName | "look" | "open" | "wait">([
+  ...browserActionNames.map((name) => [name, name] as const),
+  ...["left_click", "tap", "click_element", "click_element_by_index", "browser_click"].map((name) => [name, "click"] as const),
+  ...["input_text", "input", "fill", "fill_in", "type_text", "enter_text", "write", "browser_type", "browser_fill", "select", "select_option", "choose", "browser_select_option"].map((name) => [name, "type"] as const),
+  ...["press", "press_key", "keypress", "key_press", "hotkey", "send_keys", "browser_press_key"].map((name) => [name, "key"] as const),
+  ...["scroll_down", "scroll_up", "browser_scroll", "scroll_page"].map((name) => [name, "scroll"] as const),
+  ...["read_page", "get_text", "get_page_text", "extract_content", "extract", "extract_page_content", "browser_get_text"].map((name) => [name, "read"] as const),
+  ...["look", "snapshot", "browser_snapshot", "screenshot", "take_screenshot", "browser_take_screenshot", "observe", "get_state"].map((name) => [name, "look"] as const),
+  ...["go_back", "navigate_back", "browser_navigate_back", "browser_go_back"].map((name) => [name, "back"] as const),
+  ...["select_tab", "focus_tab", "browser_tab_select", "browser_switch_tab"].map((name) => [name, "switch_tab"] as const),
+  ...["browser_tab_close", "browser_close_tab"].map((name) => [name, "close_tab"] as const),
+  ...["open", "open_url", "navigate", "go_to_url", "goto", "go_to", "visit", "browser_navigate", "open_tab", "new_tab", "browser_tab_new"].map((name) => [name, "open"] as const),
+  ...["wait", "sleep", "browser_wait", "browser_wait_for"].map((name) => [name, "wait"] as const),
+]);
+/**
+ * Names that only mean something in the browser (read_page, go_back, browser_click…). Plain verbs
+ * the computer tool knows (click, type, scroll) go to the browser only with an element number.
+ */
+const browserOnly = (name: string) => name.startsWith("browser_") || (browserAliases.has(name) && !actionNamed(name) && !Object.hasOwn(custom, name));
+
 const custom = {
   open_app: { description: "Open an installed app by its Start menu name, including localized names. An app that's already open comes to the front.", input: z.object({ name: z.string().trim().min(1).max(150) }) },
   open_url: {
@@ -119,8 +179,17 @@ const custom = {
 } satisfies Record<string, Omit<ToolSpec, "name">>;
 const windowAliases = new Map<string, WindowOp>([["switch", "focus"], ["activate", "focus"], ["show", "focus"], ["restore", "focus"], ["open", "focus"], ["maximise", "maximize"], ["minimise", "minimize"]]);
 
-export function computerTools(vision: boolean): ToolSpec[] {
-  return [computerUse(vision), ...Object.entries(custom).map(([name, tool]) => ({ name, ...tool }))];
+/** The tools for one turn. With the browser extension connected, `browser` joins them and open_url opens a tab in it. */
+export function computerTools(vision: boolean, browser = false): ToolSpec[] {
+  return [
+    computerUse(vision),
+    ...(browser ? [browserTool] : []),
+    ...Object.entries(custom).map(([name, tool]) => ({
+      name,
+      ...tool,
+      ...(browser && name === "open_url" ? { description: "Open an http or https URL in a browser tab. You then get the page and its elements." } : {}),
+    })),
+  ];
 }
 
 export function toolSchema(tool: ToolSpec): Record<string, unknown> {
@@ -130,8 +199,11 @@ export function toolSchema(tool: ToolSpec): Record<string, unknown> {
 
 const pos = ([x, y]: z.infer<typeof point>): Point => ({ x, y });
 
-/** Parse only declared computer members and custom tools. Invalid inputs never reach the desktop. */
-export function parseCall(call: ToolCall, screen: Size): Action | { error: string } {
+/**
+ * Parse only declared computer members and custom tools. Invalid inputs never reach the desktop.
+ * `browser`: the extension is connected this turn, so browser actions are allowed.
+ */
+export function parseCall(call: ToolCall, screen: Size, browser = false): Action | { error: string } {
   try {
     if (call.error) throw new Error(call.error);
     const input = call.input;
@@ -169,13 +241,26 @@ export function parseCall(call: ToolCall, screen: Size): Action | { error: strin
         default: throw new Error(`Unsupported computer member: ${call.name}`);
       }
     }
-    if (call.name === "computer_use") return computerAction(input, screen);
+    const fields = unwrapped(input);
+    if (call.name === "browser") return browserCall(fields, browser);
+    // Once refs are in the transcript, {"name": "click", "arguments": {"ref": 12}} means the page.
+    // Taken as a desktop click without a point, it would land wherever the cursor is.
+    const onElement = refOf(fields) !== null && fields.coordinate === undefined && fields.x === undefined && fields.y === undefined;
+    if (call.name === "computer_use") {
+      const action = typeof fields.action === "string" ? fields.action.trim().toLowerCase() : "";
+      if (onElement) return browserCall({ ...fields, action: action || "click" }, browser);
+      // Browser actions written into the computer tool ({"action": "read"}) go to the browser too.
+      if (browser && browserOnly(action)) return browserCall(fields, browser);
+      return computerAction(fields, screen);
+    }
     const action = customAction(call.name, input);
     if (action) return action;
+    if (browserOnly(call.name)) return browserCall({ ...fields, action: call.name }, browser);
     // A small model sometimes calls an action as if it were a tool of its own.
     const named = actionNamed(call.name);
-    if (named) return computerAction({ ...z.record(z.string(), z.unknown()).catch({}).parse(input), action: named }, screen);
-    throw new Error(`Unknown tool: ${call.name}. Use computer_use, open_app, open_url or window.`);
+    if (named && onElement) return browserCall({ ...fields, action: call.name }, browser);
+    if (named) return computerAction({ ...fields, action: named }, screen);
+    throw new Error(`Unknown tool: ${call.name}. Use ${browser ? "browser, " : ""}computer_use, open_app, open_url or window.`);
   } catch (error) {
     // The model reads this, so a schema error is spelled out rather than dumped as JSON.
     return { error: error instanceof z.ZodError ? `Invalid ${call.name} input: ${z.prettifyError(error)}` : error instanceof Error ? error.message : String(error) };
@@ -194,6 +279,83 @@ function customAction(name: string, input: unknown): Action | undefined {
       const { action, title } = custom.window.input.parse({ action: windowAliases.get(op) ?? op, title: data.title ?? data.name });
       if (action === "focus" && !title) throw new Error("focus needs the title (or app name) of the window. Use action list to see them.");
       return { type: "window", op: action, title: title ?? null };
+    }
+  }
+}
+
+/** A call's fields, with ones wrapped once more ({"action": …, "arguments": {…}}) brought up a level. */
+function unwrapped(input: unknown): Record<string, unknown> {
+  const fields = z.record(z.string(), z.unknown()).catch({}).parse(input);
+  const inner = z.record(z.string(), z.unknown()).safeParse(fields.arguments);
+  return inner.success ? { ...fields, ...inner.data } : fields;
+}
+
+/** An element number as models write it: 12, "12", "[12]", "e12" (Playwright MCP) or "ref_12" (Claude in Chrome). */
+function refOf(fields: Record<string, unknown>): number | null {
+  for (const name of ["ref", "index", "element", "element_id", "element_index", "ref_id"]) {
+    const value = fields[name];
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+    const match = typeof value === "string" ? /^\s*\[?(?:ref_?|e)?(\d+)\]?\s*$/i.exec(value) : null;
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+const firstText = (...values: unknown[]) => values.find((value) => typeof value === "string" || typeof value === "number");
+
+/** A tab's number, under whichever name the model gave it (an `index` reads as a ref first). */
+function tabNumber(fields: Record<string, unknown>, ref: number | null): number | null {
+  const tab = numberish.pipe(z.number().int().positive()).safeParse(fields.tab ?? fields.tab_index ?? fields.page_id ?? fields.number ?? ref ?? undefined);
+  return tab.success ? tab.data : null;
+}
+
+/** Parses the browser tool, and browser actions models send under other names. Opening and waiting work without the extension. */
+function browserCall(fields: Record<string, unknown>, connected: boolean): Action {
+  const written = typeof fields.action === "string" ? fields.action.trim().toLowerCase() : "";
+  const name = browserAliases.get(written);
+  if (!connected && name !== "open" && name !== "wait") throw new Error("The browser extension isn't connected, so there are no page elements to use. Use open_url, computer_use and the keyboard.");
+  if (!name) throw new Error(`Unknown browser action "${written || String(fields.action)}". Use one of: ${browserActionNames.join(", ")}`);
+  const ref = refOf(fields);
+  const needRef = () => {
+    if (ref === null) throw new Error(`${name} needs ref: the element's number from the page, like 12 for [12]`);
+    return ref;
+  };
+  const browser = (op: BrowserAction): Action => ({ type: "browser", op });
+  switch (name) {
+    case "click": return browser({ op: "click", ref: needRef() });
+    case "type": {
+      const typed = text.safeParse(String(firstText(fields.text, fields.value, fields.option, fields.query, fields.content) ?? ""));
+      if (!typed.success) throw new Error("type needs text (up to 4000 characters)");
+      const submit = [fields.submit, fields.enter, fields.press_enter].some((value) => value === true || value === "true");
+      return browser({ op: "type", ref, text: typed.data, submit });
+    }
+    case "key": {
+      const keys = z.union([z.string().trim().min(1).transform((key) => [key]), z.array(z.string().trim().min(1)).min(1)]).safeParse(fields.keys ?? fields.key ?? fields.text);
+      if (!keys.success) throw new Error('key needs keys, such as ["enter"] or ["ctrl", "a"]');
+      return browser({ op: "key", keys: keys.data.join("+") });
+    }
+    case "scroll": {
+      // Signs follow where the model learned the field: computer_use's `pixels` scroll up when
+      // positive (pyautogui); a web page's `amount` or `delta_y` scroll down (wheel deltaY).
+      const way = String(fields.direction ?? fields.scroll_direction ?? "").toLowerCase();
+      const pixels = numberish.safeParse(fields.pixels);
+      const amount = numberish.safeParse(fields.amount ?? fields.delta_y ?? fields.deltaY);
+      const up = way ? way === "up"
+        : typeof fields.down === "boolean" ? !fields.down
+        : written.endsWith("_up") || (pixels.success && pixels.data > 0) || (amount.success && amount.data < 0);
+      return browser({ op: "scroll", direction: up ? "up" : "down" });
+    }
+    case "read": case "look": case "back": return browser({ op: name });
+    case "switch_tab": {
+      const tab = tabNumber(fields, ref);
+      if (tab === null) throw new Error("switch_tab needs tab: a tab's number from the top of the page");
+      return browser({ op: "switchTab", tab });
+    }
+    case "close_tab": return browser({ op: "closeTab", tab: tabNumber(fields, ref) });
+    case "open": return { type: "openUrl", url: custom.open_url.input.parse({ url: firstText(fields.url, fields.text, fields.href) }).url };
+    case "wait": {
+      const seconds = numberish.safeParse(fields.time ?? fields.seconds ?? fields.duration);
+      return { type: "wait", seconds: seconds.success ? Math.min(60, Math.max(0, seconds.data)) : 2 };
     }
   }
 }
@@ -218,8 +380,7 @@ const ComputerInput = z.looseObject({ action: z.string({ error: "computer_use ne
 /** Parses `computer_use`, accepting the near misses a small model makes so they don't cost a step. */
 function computerAction(input: unknown, screen: Size): Action {
   // Fields wrapped once more, as {"action": "open_url", "arguments": {"url": …}}, are unwrapped.
-  const wrapped = z.looseObject({ arguments: z.record(z.string(), z.unknown()) }).safeParse(input);
-  const data = ComputerInput.parse(wrapped.success ? { ...wrapped.data, ...wrapped.data.arguments } : input);
+  const data = ComputerInput.parse(unwrapped(input));
   const name = actionNamed(data.action);
   if (!name) {
     // Small models put other tools, or the keys themselves, where the action goes:

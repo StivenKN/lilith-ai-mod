@@ -12,6 +12,8 @@
 import { rm } from "node:fs/promises";
 import type { Config, ConfigStore } from "./config.ts";
 import { apiKeyFor, type Hotkey } from "./config.ts";
+import type { BrowserHub } from "./browser/hub.ts";
+import { BrowserSession } from "./browser/session.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import type { Action } from "./computer/actions.ts";
@@ -90,6 +92,8 @@ export interface BrainOptions {
   onFatal: (reason: string) => void;
   systemLocale?: string;
   desktop?: DesktopStatus;
+  /** The browser extension's connections. Without it (tests), she has no browser tool. */
+  browser?: Pick<BrowserHub, "current" | "status" | "onChange">;
 }
 
 export interface BrainEvent {
@@ -131,6 +135,7 @@ export class Brain {
     this.#log = options.logger.scope("brain");
     this.#desktopReady = options.desktop ? Promise.resolve(options.desktop) : getDesktop();
     void this.#desktopReady.then((status) => { this.#desktop = status; this.#emit({ type: "plugin" }); });
+    options.browser?.onChange(() => this.#emit({ type: "plugin" }));
     let model = ollamaModel(options.config.current);
     options.config.onChange((config) => {
       this.#computerEpoch++;
@@ -490,11 +495,14 @@ export class Brain {
       if (epoch !== this.#computerEpoch) return await fallback();
       if (!capabilities.tools) return await fallback();
       const searcher = createSearcher(config.search);
-      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision } };
+      const link = this.options.browser?.current();
+      const browser = link ? new BrowserSession(link, { vision: capabilities.vision }) : undefined;
+      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, browser: !!browser } };
       let lastStatus = "";
       const result = await runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(turns, context), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(turns, context), vision: capabilities.vision, browser: !!browser, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
         desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
+        ...(browser ? { browser } : {}),
         canAct: () => epoch === this.#computerEpoch,
         yieldFocus: () => this.options.send({ type: "yieldFocus" }),
         log: (message) => this.#log.info(message),
@@ -510,8 +518,7 @@ export class Brain {
         },
       });
       if (!acted && result.outcome === "superseded") return await fallback();
-      let text = result.outcome === "stopped" ? tr("computer.stopped")
-        : result.outcome === "limit" ? tr("computer.limit") : result.text;
+      let text = result.outcome === "stopped" ? tr("computer.stopped") : result.text;
       const query = result.outcome === "done" && searcher ? findSearchRequest(text) : null;
       const initialReply = parseReply(stripSearchTags(text), config.advanced.maxReplyChars);
       // A plain chat answer that mostly repeats her goes through ordinary chat, which asks again.
@@ -555,6 +562,7 @@ export class Brain {
       case "screenshot": case "zoom": case "cursor": return tr("computer.looking");
       case "openApp": return tr("computer.openingApp", { name: action.name });
       case "openUrl": return tr("computer.openingUrl");
+      case "browser": return tr(action.op.op === "read" ? "computer.reading" : "computer.browsing");
       case "window": return tr("computer.windows");
       case "type": case "key": return tr("computer.typing");
       case "wait": return tr("computer.waiting");
@@ -1081,6 +1089,7 @@ export class Brain {
         available: this.#desktop.available,
         ...(!this.#desktop.available ? { reason: this.#desktop.reason } : {}),
         ...this.#computerCapabilities,
+        browser: this.options.browser?.status() ?? { state: "absent" as const },
       },
     };
   }

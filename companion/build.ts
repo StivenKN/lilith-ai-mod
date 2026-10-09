@@ -1,7 +1,8 @@
 // Compiles the companion into a single executable.
 //   bun build.ts              → dist/LilithAICompanion.exe (Windows x64; icon/metadata only when built on Windows)
 //   bun build.ts --host       → dist/LilithAICompanion-<os> for a quick local smoke test
-// The dashboard (HTML/CSS/TSX/fonts) is bundled into the binary through the HTML import.
+// The dashboard (HTML/CSS/TSX/fonts) is bundled into the binary through the HTML import, and the
+// browser extension through dist/browser-extension.txt (extension/build.ts writes it first).
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,6 +37,8 @@ if (onWindows && !host) {
 }
 
 await mkdir("dist", { recursive: true });
+const extension = Bun.spawn([process.execPath, "extension/build.ts"], { stdout: "inherit", stderr: "inherit" });
+if ((await extension.exited) !== 0) process.exit(1);
 const build = Bun.spawn([process.execPath, ...args], { stdout: "inherit", stderr: "inherit" });
 const code = await build.exited;
 if (code !== 0) process.exit(code);

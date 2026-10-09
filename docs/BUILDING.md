@@ -22,6 +22,9 @@ bun build.ts --host    # → dist/LilithAICompanion-<os>, to smoke-test locally
 ```
 
 Icon and version metadata are only embedded when `build.ts` runs on Windows, as it does in CI.
+`build.ts` first runs `extension/build.ts`, which bundles the browser extension into
+`dist/browser-extension.txt` for the exe to carry. `pnpm typecheck` checks the extension too, with
+its own `extension/tsconfig.json` (Chrome's APIs instead of Bun's).
 
 Development loop, no game needed:
 
@@ -32,6 +35,11 @@ bun scripts/sim.ts es-419              # act as the game plugin: type to chat, /
 ```
 
 Set `LILITH_AI_DATA_DIR` to a temporary folder to keep test settings away from your real ones.
+
+Browser extension: `--dev` writes it from source to `browser-extension/` in the data folder on every
+start. Load that folder in Chrome (chrome://extensions → Developer mode → Load unpacked) and click
+its reload button after changing the extension. With `LILITH_AI_FAKE_DESKTOP=1`, browser turns work
+on any OS; send `!b https://example.com` to the mock AI to watch one.
 
 Voice: the Voice tab downloads the engines on Windows only. Elsewhere, point the companion at
 engines you installed yourself, then download voices and models from the tab as usual:

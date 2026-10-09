@@ -83,7 +83,7 @@ describe("OpenAI-compatible adapter", () => {
     const reached = new Promise<void>((resolve) => { started = resolve; });
     const provider = createProvider({ preset: "custom", baseUrl: server.url, model: "retry-cancellation", apiKey: "test" }, () => started());
     const controller = new AbortController();
-    const pending = mode === "chat" ? provider.chat({ ...request, signal: controller.signal }) : provider.agent({ ...request, vision: false }).next([], { timeoutMs: 2000, signal: controller.signal });
+    const pending = mode === "chat" ? provider.chat({ ...request, signal: controller.signal }) : provider.agent({ ...request, vision: false, browser: false }).next([], { timeoutMs: 2000, signal: controller.signal });
     await reached;
     controller.abort();
     await expect(pending).rejects.toThrow();
@@ -249,7 +249,7 @@ describe("Anthropic adapter", () => {
   });
 });
 
-const agentRequest = { ...request, vision: true };
+const agentRequest = { ...request, vision: true, browser: false };
 const http = { timeoutMs: 2000 };
 const image = bgraToPng(Uint8Array.of(0, 0, 255, 0), 1, 1);
 const transcript = z.object({ messages: z.array(z.looseObject({ role: z.string(), content: z.unknown() })) });
@@ -441,6 +441,23 @@ describe("computer sessions", () => {
       { type: "tool_result", tool_use_id: "refused", is_error: true, content: [{ type: "text", text: "Not executed: look first" }] },
       expect.objectContaining({ type: "image" }), { type: "text", text: "This is the screen now." },
     ]);
+  });
+
+  test.each(["openai", "ollama"] as const)("%s offers the browser tool and keeps only the newest page, text-only ones too", async (preset) => {
+    let n = 0;
+    const server = mock(() => preset === "ollama"
+      ? Response.json({ message: { content: "", tool_calls: [{ function: { name: "browser", arguments: { action: "read" } } }] } })
+      : completion("", { role: "assistant", tool_calls: [{ id: `call-${++n}`, type: "function", function: { name: "browser", arguments: '{"action":"read"}' } }] }));
+    const session = createProvider({ preset, baseUrl: server.url, model: "qwen3", apiKey: "test" }, noop).agent({ ...agentRequest, vision: false, browser: true });
+    const first = await session.next([], http);
+    const second = await session.next([{ id: first.calls[0]!.id, text: "OK", page: "First page [1] link", caption: "This is the browser page now." }], http);
+    await session.next([{ id: second.calls[0]!.id, text: "OK", page: "Second page [2] button", caption: "This is the browser page now." }], http);
+    expect(JSON.stringify(server.bodies[0])).toContain('"name":"browser"');
+    const messages = transcript.parse(server.bodies.at(-1)).messages;
+    expect(JSON.stringify(messages)).not.toContain("First page");
+    expect(messages.filter((message) => message.content === "[earlier page removed]")).toHaveLength(1);
+    // Text-only pages stay plain strings, which every compatible server accepts.
+    expect(messages.at(-1)).toEqual({ role: "user", content: "Second page [2] button\n\nThis is the browser page now." });
   });
 
   test("Ollama asks again when the model writes a tool call it can't parse, then acts cooler with the task beside the screen", async () => {

@@ -71,3 +71,12 @@ These help tune the defaults:
 - Where the popup appears relative to Lilith, especially with multiple monitors or scaling.
 - How a long card looks on the note paper (does the text fit, wrap, or get cut?). The length limit is
   `CARD_MAX_CHARS` in `companion/src/prompt.ts`.
+| 49 | Dashboard → **Lilith** → Using your PC → Browser: follow the steps in Chrome, then in Edge | The block turns green ("Connected to Google Chrome …"), within 30 s of the companion starting. The toolbar icon shows "on" |
+| 50 | Ask qwen3-vl:4b-instruct, then a text-only local model: "Busca música lofi en YouTube y pon el primer video" | She opens YouTube in a "Lilith" tab group, searches and plays a video using element numbers (log: `browser type`, `browser click`). Your mouse never moves and the popup stays up. Note how many of 10 tries succeed with each model |
+| 51 | While she browses, keep typing in Notepad | She keeps going; your typing isn't interrupted and doesn't reach her tab |
+| 52 | Press **Cancel** on Chrome's "Lilith AI Companion started debugging this browser" bar mid-task | She stops ("Okay, I'll stop.") and the bar is gone |
+| 53 | Open a news article, then ask "¿De qué trata esta página?" | She reads the tab you're on and sums it up |
+| 54 | On a login page, ask her to log in with a password you give her | She refuses to type the password and asks you to log in |
+| 55 | With Windows at 150% scaling and the page zoomed to 125%, ask her to click a small link; repeat with the browser behind another maximized window | Clicks land on the right element. Behind other windows she still acts; a vision model may get the page without a picture |
+| 56 | Copy `browser-extension` somewhere else, load that copy instead, restart the game | The dashboard says the extension isn't paired and to load it from the folder shown |
+| 57 | Update the mod to a newer version with the browser open | Within about a minute of the game starting, the extension reloads itself and reconnects with the new version |
