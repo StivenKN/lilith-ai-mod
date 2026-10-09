@@ -1,0 +1,10 @@
+{
+  // The extension runs in the browser: Chrome's APIs instead of Bun's. build.ts runs in Bun and is
+  // checked with the companion.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["chrome"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+  },
+  "include": ["background.ts", "page.ts"]
+}

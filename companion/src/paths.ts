@@ -23,6 +23,8 @@ export const dataPaths = (root = dataDir()) => ({
   logFile: join(root, "logs", "lilith-ai.log"),
   /** Voice engines, voices, speech models and the audio cache (see voice/index.ts). */
   voice: join(root, "voice"),
+  /** The unpacked browser extension the player loads once, with this user's pairing secret (browser/install.ts). */
+  browserExtension: join(root, "browser-extension"),
   /** Written by the running instance so a second launch can hand off to it. */
   instance: join(root, "instance.json"),
 });

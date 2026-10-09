@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { runComputerTurn, type ComputerTurnOptions } from "./agent.ts";
+import type { BrowserAction, Observation } from "../browser/session.ts";
+import { runComputerTurn, type BrowserTurn, type ComputerTurnOptions } from "./agent.ts";
 import { FakeDesktop } from "./desktop.ts";
 import { waitForLaunchFocus } from "./focus.ts";
 import { bgraToPng } from "./png.ts";
@@ -27,7 +28,7 @@ test("plain chat touches nothing; a batch yields focus once and ends with one sc
   const [opened, typed] = received[1]!;
   expect(opened?.image).toBeUndefined();
   expect(typed?.image).toBeDefined();
-  expect(typed?.caption).toContain('Your host asked: "Write hola in Notepad". Actions used: 2 of 40.');
+  expect(typed?.caption).toContain('Your host asked: "Write hola in Notepad". Do the next step');
   expect(typed?.text).toBe('OK Active window: "Untitled - Notepad" (notepad.exe).');
 });
 
@@ -106,17 +107,7 @@ test("player takeover cancels an in-flight model request and closes the watcher"
   expect(closed).toBe(true);
 });
 
-test("action and wall-clock caps stop without executing extra calls", async () => {
-  const desktop = new FakeDesktop();
-  const session = scripted(step(call("open_app", { name: "One" }), call("open_app", { name: "Two" }))).session;
-  expect(await run(session, desktop, { maxSteps: 1, vision: false })).toMatchObject({ outcome: "limit" });
-  expect(desktop.actions).toHaveLength(1);
-  expect(await run(scripted(step({ ...call("wait", { duration: 30 }), toolset: "computer" })).session, new FakeDesktop(), { maxMs: 20 })).toMatchObject({ outcome: "limit" });
-});
-
-test("the action deadline starts after model loading, and watcher errors stop before input", async () => {
-  const loading: AgentSession = { async next() { await Bun.sleep(30); return step(); } };
-  expect(await run(loading, new FakeDesktop(), { maxMs: 10 })).toMatchObject({ outcome: "done" });
+test("watcher errors stop before input", async () => {
   const desktop = new FakeDesktop();
   let closed = false;
   desktop.watchInput = () => ({ changed() { throw new Error("Raw input failed"); }, close() { closed = true; } });
@@ -159,4 +150,84 @@ test("superseding a turn during focus handoff prevents its first action", async 
   let current = true;
   expect(await run(scripted(step(act({ action: "type", text: "Old task" }))).session, desktop, { canAct: () => current, yieldFocus: () => { current = false; } })).toMatchObject({ outcome: "superseded" });
   expect(desktop.actions).toHaveLength(0);
+});
+
+/** A browser that records what it's asked and shows a page that changes after anything but a look. */
+function fakeBrowser(options: { image?: boolean } = {}) {
+  const done: Array<BrowserAction | { op: "open"; url: string }> = [];
+  let version = 0, stop = () => {}, released = 0;
+  const browser: BrowserTurn = {
+    async open(url) { done.push({ op: "open", url }); version++; return "Opened in a new tab."; },
+    async run(action) {
+      done.push(action);
+      if (action.op !== "look" && action.op !== "read") version++;
+      return "Clicked.";
+    },
+    async observe(): Promise<Observation> {
+      const page = `Page v${version}\n[1] button "Search"`;
+      return { page, same: null, ...(options.image ? { image: bgraToPng(new Uint8Array(4), 1, 1) } : {}) };
+    },
+    release() { released++; },
+    onStop(listener) { stop = listener; return () => { stop = () => {}; }; },
+  };
+  return { browser, done, stop: () => stop(), released: () => released };
+}
+const browse = (input: Record<string, unknown>) => call("browser", input);
+
+test("a model that can't see browses by element numbers, without the popup moving or the input watch", async () => {
+  const desktop = new FakeDesktop();
+  const { browser, done, released } = fakeBrowser();
+  let focuses = 0;
+  const { session, received } = scripted(step(call("open_url", { url: "youtube.com" })), step(browse({ action: "type", ref: 1, text: "cats", submit: true }), browse({ action: "click", ref: 1 })), step());
+  expect(await run(session, desktop, { vision: false, browser, yieldFocus: () => focuses++ })).toMatchObject({ outcome: "done" });
+  expect(done).toEqual([{ op: "open", url: "https://youtube.com" }, { op: "type", ref: 1, text: "cats", submit: true }, { op: "click", ref: 1 }]);
+  expect(focuses).toBe(0);
+  expect(desktop.actions).toHaveLength(0);
+  const page = received[1]![0]!;
+  expect(page).toMatchObject({ text: "Opened in a new tab.", page: expect.stringContaining('[1] button "Search"'), caption: expect.stringContaining("This is the browser page now.") });
+  expect(page.image).toBeUndefined();
+  expect(received[2]![1]!.page).toContain("Page v3");
+  expect(released()).toBe(1);
+});
+
+test("after a page picture, screen coordinates are refused as guesses", async () => {
+  const desktop = new FakeDesktop();
+  const { browser } = fakeBrowser({ image: true });
+  const { session, received } = scripted(step(browse({ action: "read" })), step(act({ action: "left_click", coordinate: [500, 500] })), step());
+  await run(session, desktop, { browser });
+  expect(received[1]![0]!.image).toBeDefined();
+  expect(received[2]![0]).toMatchObject({ isError: true, text: expect.stringContaining("shows only the browser page") });
+  expect(desktop.actions).toHaveLength(0);
+});
+
+test("cancelling the browser's debugging bar stops the turn", async () => {
+  const fake = fakeBrowser();
+  const session: AgentSession = { async next(_results, http) {
+    setTimeout(fake.stop, 10);
+    await new Promise<void>((_resolve, reject) => http.signal!.addEventListener("abort", () => reject(http.signal!.reason), { once: true }));
+    return step();
+  } };
+  expect(await run(session, new FakeDesktop(), { browser: fake.browser })).toMatchObject({ outcome: "stopped" });
+  expect(fake.released()).toBe(1);
+});
+
+test("a page that didn't change is said so, and the third identical try ends the task", async () => {
+  const { browser } = fakeBrowser();
+  let observed = 0;
+  browser.observe = async () => ({ page: "Same page", same: observed++ > 0 });
+  const click = () => browse({ action: "click", ref: 1 });
+  const { session, received } = scripted(step(click()), step(click()), step(click()), step(click()), step(click()));
+  expect(await run(session, new FakeDesktop(), { browser })).toMatchObject({ outcome: "done" });
+  expect(received[2]![0]!.text).toContain("The page did not change.");
+  expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("the page did not change") });
+});
+
+test("waiting while browsing shows the page again and leaves the desktop to the player", async () => {
+  const desktop = new FakeDesktop();
+  const { browser } = fakeBrowser();
+  let focuses = 0;
+  const { session, received } = scripted(step(call("open_url", { url: "example.com" })), step(call("browser_wait", { time: 1 })), step());
+  await run(session, desktop, { vision: false, browser, yieldFocus: () => focuses++ });
+  expect(received[2]![0]!.page).toContain("Page v1");
+  expect(focuses).toBe(0);
 });

@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Brain, computerEnabled } from "./brain.ts";
+import { Brain, computerEnabled, type BrainOptions } from "./brain.ts";
+import type { BrowserLink } from "./browser/session.ts";
 import { FakeDesktop, type DesktopStatus } from "./computer/desktop.ts";
 import { ConfigStore } from "./config.ts";
 import { Keepsakes } from "./keepsakes.ts";
@@ -51,7 +52,7 @@ const fakeVoice = (overrides: Partial<VoiceService> = {}): VoiceService => ({
   ...overrides,
 });
 
-async function setup(name: string, options: { desktop?: DesktopStatus; connect?: boolean; caps?: Record<string, string>; voice?: VoiceService } = {}) {
+async function setup(name: string, options: { desktop?: DesktopStatus; connect?: boolean; caps?: Record<string, string>; voice?: VoiceService; browser?: BrainOptions["browser"] } = {}) {
   requests = [];
   const config = await ConfigStore.load(join(dir, `${name}-config.json`));
   await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-x", configured: true }, apiKeys: { openai: "sk-test-abcdefghijklmnop" }, features: { computerControl: "off" } });
@@ -59,7 +60,7 @@ async function setup(name: string, options: { desktop?: DesktopStatus; connect?:
   const keepsakes = await Keepsakes.load(join(dir, `${name}-keepsakes.json`), join(dir, `${name}-pictures`));
   const logger = new Logger(null);
   const sent: CompanionMessage[] = [];
-  const brain = new Brain({ version: "test", config, memory, keepsakes, logger, voice: options.voice ?? fakeVoice(), send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(options.desktop ? { desktop: options.desktop } : {}) });
+  const brain = new Brain({ version: "test", config, memory, keepsakes, logger, voice: options.voice ?? fakeVoice(), send: (m) => sent.push(m), dashboardUrl: () => "", openDashboard: () => {}, onFatal: () => {}, ...(options.desktop ? { desktop: options.desktop } : {}), ...(options.browser ? { browser: options.browser } : {}) });
   brain.handlePluginMessage(gameState);
   if (options.connect !== false) brain.handlePluginMessage(hello(options.caps));
   return { brain, sent, logger, memory, config, keepsakes };
@@ -179,6 +180,42 @@ test("Brain executes one tool turn, shows statuses, and stores only the user and
   expect(memory.history.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   expect(JSON.stringify(memory.history)).not.toContain("image");
   expect(brain.snapshot().computer).toMatchObject({ available: true, tools: true, vision: true });
+});
+
+test("with the browser connected, she gets its tool and rules, opens pages there and reads them back", async () => {
+  const desktop = new FakeDesktop();
+  const asked: Array<{ op: string; input: unknown }> = [];
+  const page = { doc: "d", url: "https://www.youtube.com/results?search_query=gatos", title: "gatos - YouTube", elements: [{ ref: 1, tag: "a", text: "Gatos graciosos", where: "view" as const }] };
+  const link: BrowserLink = {
+    async call(op, input) {
+      asked.push({ op, input });
+      return (op === "open" ? { tab: 3 } : op === "look" ? { tab: 3, tabs: [{ id: 3, title: page.title, url: page.url, mine: true, active: true }], page } : {}) as never;
+    },
+    onStop: () => () => {},
+  };
+  const bodies: Array<{ messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string } }> }> = [];
+  respond = async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+    if (path === "/api/ps") return Response.json({ models: [{ name: "qwen" }] });
+    const body = await request.json() as (typeof bodies)[number];
+    bodies.push(body);
+    return Response.json({ model: "qwen", message: body.messages.some((message) => message.role === "tool")
+      ? { content: "Ya abrí los videos de gatos. [feliz]" }
+      : { content: "", tool_calls: [{ function: { name: "open_url", arguments: { url: "https://www.youtube.com/results?search_query=gatos" } } }] } });
+  };
+  const browser = { current: () => link, status: () => ({ state: "connected" as const, browser: "Google Chrome 152", version: "test" }), onChange: () => () => {} };
+  const { brain, sent, config } = await setup("browser", { desktop: { available: true, desktop }, browser });
+  await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "qwen" }, features: { computerControl: "auto", learnFacts: false } });
+  expect(await brain.chat("Busca gatos en YouTube", "game")).toMatchObject({ ok: true, text: "Ya abrí los videos de gatos." });
+  expect(bodies[0]!.tools.map((tool) => tool.function.name)).toContain("browser");
+  expect(bodies[0]!.messages[0]!.content).toContain("usa la herramienta browser");
+  expect(asked.map((call) => call.op)).toEqual(["open", "look", "release"]);
+  expect(bodies[1]!.messages.at(-1)!.content).toContain('[1] link "Gatos graciosos"');
+  expect(desktop.actions).toHaveLength(0);
+  // Browsing leaves the chat popup where it is.
+  expect(sent).not.toContainEqual({ type: "yieldFocus" });
+  expect(brain.snapshot().computer.browser).toEqual({ state: "connected", browser: "Google Chrome 152", version: "test" });
 });
 
 test("an Ollama model loads when the chat opens, and is freed when another is chosen or the game closes", async () => {

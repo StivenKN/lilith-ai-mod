@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import dashboard from "../web/index.html";
 import type { Brain } from "./brain.ts";
+import type { BrowserHub, SocketData } from "./browser/hub.ts";
+import { DASHBOARD_PORTS } from "./browser/shared.ts";
 import { apiKeyFor, publicConfig, type ConfigStore, type SettingsPatch } from "./config.ts";
 import { buildReport } from "./diagnostics.ts";
 import { findGameDirs, inspectGame, install, payloadStatus, steamRoots, uninstall } from "./installer.ts";
@@ -28,7 +30,6 @@ import { isComponentId, voiceIds, voices } from "./voice/catalog.ts";
 import { sampleLine, VoiceError, type Voice } from "./voice/index.ts";
 
 export const APP_NAME = "lilith-ai-companion";
-const PORTS = Array.from({ length: 20 }, (_, i) => 47321 + i);
 const COOKIE = "lac_session";
 
 export interface AppContext {
@@ -39,6 +40,8 @@ export interface AppContext {
   keepsakes: Keepsakes;
   logger: Logger;
   brain: Brain;
+  /** The browser extension's connections (served on /api/browser). */
+  browser: BrowserHub;
   updater: Updater;
   voice: Voice;
   paths: DataPaths;
@@ -78,7 +81,7 @@ export function createProcedures(ctx: AppContext) {
     overview: procedure(none, async () => {
       const snapshot = ctx.brain.snapshot();
       return {
-        app: { version: ctx.version, mode: ctx.mode, dataDir: ctx.paths.root, logFile: ctx.paths.logFile, platform: process.platform },
+        app: { version: ctx.version, mode: ctx.mode, dataDir: ctx.paths.root, logFile: ctx.paths.logFile, extensionDir: ctx.paths.browserExtension, platform: process.platform },
         config: publicConfig(ctx.config.current),
         brain: snapshot,
         update: ctx.updater.status,
@@ -229,8 +232,9 @@ export function createProcedures(ctx: AppContext) {
       }),
     })),
 
-    openFolder: procedure(z.object({ which: z.enum(["logs", "data", "game"]) }), async ({ which }) => {
-      const target = which === "logs" ? ctx.paths.logs : which === "data" ? ctx.paths.root : ctx.brain.snapshot().hello?.gameDir;
+    openFolder: procedure(z.object({ which: z.enum(["logs", "data", "game", "extension"]) }), async ({ which }) => {
+      const folders = { logs: ctx.paths.logs, data: ctx.paths.root, extension: ctx.paths.browserExtension, game: ctx.brain.snapshot().hello?.gameDir };
+      const target = folders[which];
       if (target) ctx.openPath(target);
       return { ok: Boolean(target) };
     }),
@@ -448,7 +452,7 @@ export async function startServer(ctx: AppContext): Promise<DashboardServer> {
     },
   };
 
-  const { port, server } = await serveOnFreePort(PORTS, (port) => Bun.serve({
+  const { port, server } = await serveOnFreePort(DASHBOARD_PORTS, (port) => Bun.serve<SocketData>({
     hostname: "127.0.0.1",
     port,
     reusePort: false,
@@ -456,7 +460,11 @@ export async function startServer(ctx: AppContext): Promise<DashboardServer> {
     idleTimeout: 255,
     development: ctx.mode === "dev",
     routes,
-    fetch: () => new Response("Not found", { status: 404 }),
+    // The browser extension connects here; its own pairing proof stands in for the session cookie.
+    websocket: ctx.browser.websocket,
+    fetch: (request, server) => new URL(request.url).pathname === "/api/browser"
+      ? ctx.browser.upgrade(request, server, hostOk(request))
+      : new Response("Not found", { status: 404 }),
   }), (message) => log.debug(message));
   allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   log.info(`dashboard listening on http://127.0.0.1:${port}`);
@@ -480,6 +488,16 @@ export async function serveOnFreePort<S>(ports: readonly number[], serve: (port:
     catch (error) { log(`port ${port} unavailable (${errorMessage(error)})`); }
   }
   throw new Error(`No free port for the dashboard (tried ${ports[0]}-${ports.at(-1)})`);
+}
+
+/** Whether a companion (this app, not just anything) serves on this local port. */
+export async function companionAt(port: number): Promise<boolean> {
+  try {
+    const ping = (await (await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(1500) })).json()) as { app?: unknown };
+    return ping.app === APP_NAME;
+  } catch {
+    return false;
+  }
 }
 
 async function answers(port: number): Promise<boolean> {

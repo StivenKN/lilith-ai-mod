@@ -40,7 +40,7 @@ jobs:
 
       - name: Typecheck and test
         run: |
-          pnpm exec tsc --noEmit
+          pnpm typecheck
           bun test
 
       - name: Build LilithAICompanion.exe

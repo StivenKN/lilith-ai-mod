@@ -7,9 +7,9 @@
     "dev": "bun --watch src/main.ts",
     "sim": "bun scripts/sim.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extension",
     "build": "bun build.ts",
-    "check": "tsc --noEmit && bun test"
+    "check": "tsc --noEmit && tsc --noEmit -p extension && bun test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
+    "@types/chrome": "^0.3.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "typescript": "^7.0.2"

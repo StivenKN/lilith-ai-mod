@@ -234,7 +234,7 @@ export async function readTextFile(path: string): Promise<string | null> {
 }
 
 /** Write to a temp file then rename, so a crash never leaves a half-written file. */
-export async function writeAtomic(path: string, contents: string): Promise<void> {
+export async function writeAtomic(path: string, contents: string | Uint8Array): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.tmp`;
   await writeFile(temp, contents, "utf8");

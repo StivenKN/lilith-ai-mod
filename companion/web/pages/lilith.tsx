@@ -3,7 +3,7 @@ import type { Config, SettingsPatch } from "../../src/config.ts";
 import { languageCodes, languages, type Language } from "../../src/languages.ts";
 import { call, useRpc, type Output } from "../api.ts";
 import type { Overview } from "../app.tsx";
-import { Field, Toggle, useTr } from "../ui.tsx";
+import { Field, Note, Toggle, useTr } from "../ui.tsx";
 
 export function LilithPage(props: { overview: Overview; tick: number; refresh: () => void }) {
   const tr = useTr();
@@ -200,6 +200,10 @@ export function LilithPage(props: { overview: Overview; tick: number; refresh: (
         return <p role="status" className="hint">{tr(!state.tools ? "computer.noTools" : state.vision ? "computer.vision" : "computer.blind")}</p>;
       })()}
 
+      <h3>{tr("browser.title")}</h3>
+      <p className="hint">{tr("browser.intro")}</p>
+      <BrowserExtension status={props.overview.brain.computer.browser} folder={props.overview.app.extensionDir} flash={flash} />
+
       <h2>{tr("lilith.historyTitle")}</h2>
       <p className="hint">{tr("lilith.historyIntro")}</p>
       <button
@@ -217,5 +221,26 @@ export function LilithPage(props: { overview: Overview; tick: number; refresh: (
         {tr("lilith.historyClear")}
       </button>
     </>
+  );
+}
+
+/** Whether her browser extension is connected and, until it is, how to install it. */
+function BrowserExtension(props: { status: Overview["brain"]["computer"]["browser"]; folder: string; flash: (message: string) => void }) {
+  const tr = useTr();
+  if (props.status.state === "connected") return <Note tone="ok"><p>{tr("browser.connected", { browser: props.status.browser })}</p></Note>;
+  return (
+    <Note {...(props.status.state === "unpaired" ? { tone: "warn" as const } : {})}>
+      <p>{tr(props.status.state === "unpaired" ? "browser.unpaired" : "browser.absent")}</p>
+      <ol>
+        <li>{tr("browser.step1")}</li>
+        <li>{tr("browser.step2")}</li>
+        <li>{tr("browser.step3")} <code>{props.folder}</code></li>
+      </ol>
+      <div className="row">
+        <button className="secondary" onClick={() => void call("openFolder", { which: "extension" })}>{tr("browser.openFolder")}</button>
+        <button className="quiet" onClick={() => void navigator.clipboard.writeText(props.folder).then(() => props.flash(tr("browser.copied")))}>{tr("browser.copyPath")}</button>
+      </div>
+      <p className="hint" style={{ marginTop: 12 }}>{tr("browser.hint")}</p>
+    </Note>
   );
 }

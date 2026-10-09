@@ -171,16 +171,23 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
 
     agent(request) {
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map((turn): Message => turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content })];
-      const tools = computerTools(request.vision);
+      const tools = computerTools(request.vision, request.browser);
       let sequence = 0;
+      // Where the latest screenshot or page sits. The one before is blanked: each costs as much context as a long reply.
+      let observation: { index: number; image: boolean } | undefined;
       return {
         async next(results, http) {
           if (quirks.has("no-tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
           for (const result of results) messages.push({ role: "tool", tool_call_id: result.id, content: `${result.isError ? "Error: " : ""}${result.text}` });
-          const latest = results.findLast((result) => result.image);
-          if (latest?.image) {
-            for (const message of messages) if (message.role === "user" && Array.isArray(message.content)) message.content = [{ type: "text", text: "[earlier screenshot removed]" }];
-            messages.push({ role: "user", content: [{ type: "text", text: latest.caption ?? "Current primary screen after the actions." }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] });
+          const latest = results.findLast((result) => result.image || result.page);
+          if (latest) {
+            if (observation) messages[observation.index] = { role: "user", content: `[earlier ${observation.image ? "screenshot" : "page"} removed]` };
+            const text = [latest.page, latest.caption ?? "Current primary screen after the actions."].filter(Boolean).join("\n\n");
+            observation = { index: messages.length, image: !!latest.image };
+            // Text-only pages stay plain strings, which every compatible server accepts.
+            messages.push(latest.image
+              ? { role: "user", content: [{ type: "text", text }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] }
+              : { role: "user", content: text });
           }
           for (let attempt = 0; ; attempt++) {
             const body = buildBody({ ...request, temperature: stepTemperature(request, results), timeoutMs: http.timeoutMs });

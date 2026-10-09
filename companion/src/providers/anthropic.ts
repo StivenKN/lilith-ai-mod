@@ -103,6 +103,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
               const blocks: Array<BetaTextBlockParam | BetaImageBlockParam> = [{ type: "text", text: result.text }];
               const seen: Array<BetaTextBlockParam | BetaImageBlockParam> = [];
               if (result.image) seen.push({ type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from(result.image).toString("base64") } });
+              if (result.page) seen.push({ type: "text", text: result.page });
               if (result.caption) seen.push({ type: "text", text: result.caption });
               (result.isError ? after : blocks).push(...seen);
               const toolset = pending.find((call) => call.id === result.id)?.toolset;
@@ -112,7 +113,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
           }
           for (let attempt = 0; ; attempt++) {
             const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
-            const tools: BetaToolUnion[] = computerTools(request.vision)
+            const tools: BetaToolUnion[] = computerTools(request.vision, request.browser)
               .filter((tool) => !toolset || tool.name !== "computer_use")
               .map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
             if (toolset) tools.unshift({ type: "computer_toolset_20260801", configs: { hold_key: { enabled: false }, left_mouse_down: { enabled: false }, left_mouse_up: { enabled: false } } });
