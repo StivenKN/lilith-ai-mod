@@ -427,5 +427,9 @@ The dashboard is a local server that holds API keys, so it is locked down:
 - The `Host` header is checked, against DNS rebinding.
 - Each run gets a fresh session token, delivered in the link the game or the console opens and
   stored as a `SameSite=Strict`, `HttpOnly` cookie.
+- Each companion serves on its own port, from 47321 up. Bun can let two processes share a port
+  (SO_REUSEPORT on Linux, address reuse on Windows), and then a login link reaches the other
+  companion, whose token doesn't match, so the dashboard stays locked. Port sharing is off, and a
+  port that already answers is skipped before binding, whatever the platform does.
 - RPC calls must be JSON POSTs.
 - API keys are never sent back to the browser in full, and are redacted from logs and reports.

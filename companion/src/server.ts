@@ -284,7 +284,7 @@ export interface DashboardServer {
   stop: () => void;
 }
 
-export function startServer(ctx: AppContext): DashboardServer {
+export async function startServer(ctx: AppContext): Promise<DashboardServer> {
   const token = crypto.randomUUID().replace(/-/g, "");
   const procedures = createProcedures(ctx);
   const log = ctx.logger.scope("server");
@@ -448,24 +448,45 @@ export function startServer(ctx: AppContext): DashboardServer {
     },
   };
 
-  for (const port of PORTS) {
-    try {
-      const server = Bun.serve({
-        hostname: "127.0.0.1",
-        port,
-        // Long enough for a local model's first load during a chat request.
-        idleTimeout: 255,
-        development: ctx.mode === "dev",
-        routes,
-        fetch: () => new Response("Not found", { status: 404 }),
-      });
-      allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-      const loginUrl = `http://127.0.0.1:${port}/?t=${token}`;
-      log.info(`dashboard listening on http://127.0.0.1:${port}`);
-      return { port, loginUrl, stop: () => void server.stop(true) };
-    } catch (error) {
-      log.debug(`port ${port} unavailable (${errorMessage(error)})`);
+  const { port, server } = await serveOnFreePort(PORTS, (port) => Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    reusePort: false,
+    // Long enough for a local model's first load during a chat request.
+    idleTimeout: 255,
+    development: ctx.mode === "dev",
+    routes,
+    fetch: () => new Response("Not found", { status: 404 }),
+  }), (message) => log.debug(message));
+  allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  log.info(`dashboard listening on http://127.0.0.1:${port}`);
+  return { port, loginUrl: `http://127.0.0.1:${port}/?t=${token}`, stop: () => void server.stop(true) };
+}
+
+/**
+ * Serves on the first port nothing else answers on. Bun can share a port between processes
+ * (SO_REUSEPORT on Linux, address reuse on Windows). A second companion, like the setup exe opened
+ * while the game runs, then binds the first one's port, and the login link it opens reaches the
+ * other process, whose token doesn't match: the dashboard stays locked. So a port that already
+ * answers is skipped before binding, whatever the platform's socket options do.
+ */
+export async function serveOnFreePort<S>(ports: readonly number[], serve: (port: number) => S, log: (message: string) => void): Promise<{ port: number; server: S }> {
+  for (const port of ports) {
+    if (await answers(port)) {
+      log(`port ${port} is in use`);
+      continue;
     }
+    try { return { port, server: serve(port) }; }
+    catch (error) { log(`port ${port} unavailable (${errorMessage(error)})`); }
   }
-  throw new Error(`No free port for the dashboard (tried ${PORTS[0]}-${PORTS.at(-1)})`);
+  throw new Error(`No free port for the dashboard (tried ${ports[0]}-${ports.at(-1)})`);
+}
+
+async function answers(port: number): Promise<boolean> {
+  try {
+    (await Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {} } })).end();
+    return true;
+  } catch {
+    return false;
+  }
 }

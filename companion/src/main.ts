@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     autoInstall: () => config.current.features.autoUpdate,
     log: logger.scope("update"),
   });
-  const server = startServer({
+  const server = await startServer({
     version: VERSION,
     mode,
     config,
