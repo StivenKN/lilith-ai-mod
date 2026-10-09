@@ -13,7 +13,12 @@ export type InputEvent =
   | { type: "wheel"; clicks: number; horizontal: boolean }
   | { type: "key"; vk: number; scan: number; extended: boolean; down: boolean }
   /** One UTF-16 code unit typed regardless of keyboard layout. */
-  | { type: "unicode"; unit: number; down: boolean };
+  | { type: "unicode"; unit: number; down: boolean }
+  /**
+   * A mouse event that moves and presses nothing. Windows lets only the process behind the latest
+   * input change the foreground window, so one goes out before switching windows (as PowerToys does).
+   */
+  | { type: "nudge" };
 
 export const INPUT_SIZE = 40;
 
@@ -85,6 +90,9 @@ export function encodeInputs(events: readonly InputEvent[], extraInfo = 0n, swap
         view.setUint32(base, INPUT_KEYBOARD, true);
         view.setUint16(union + 2, event.unit, true);
         view.setUint32(union + 4, KEYEVENTF_UNICODE | (event.down ? 0 : KEYEVENTF_KEYUP), true);
+        break;
+      case "nudge":
+        view.setUint32(base, INPUT_MOUSE, true);
         break;
     }
     view.setBigUint64(union + (event.type === "key" || event.type === "unicode" ? 16 : 24), extraInfo, true);

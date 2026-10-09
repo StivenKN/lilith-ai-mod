@@ -40,8 +40,9 @@ answers in her own speech bubble, in character, in your language, and remembers 
   start the game (turn it off in **Game → Installation**).
 - **Honest errors.** When something fails, she doesn't make up an excuse: the bubble says what broke
   and how to fix it ("The OpenAI API key isn't valid…", "Ollama isn't running…").
-- **Computer control.** Ask Lilith to open apps or links, type, and use the mouse. Vision models
-  can read screenshots; other models stick to keyboard and app-launch tools. Windows x64 only.
+- **Computer control.** Ask Lilith to do things on your PC: open apps or links, switch between
+  windows, type, click and scroll through an app, step by step. Vision models see the screen after
+  every action; other models stick to the keyboard, apps and windows. Windows x64 only.
 
 ## Install
 

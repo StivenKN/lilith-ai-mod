@@ -211,45 +211,146 @@ with code 2 and the plugin shows "reinstall the mod" instead of restarting it.
 Speak-first remarks and provider connection tests never get computer tools. Unsupported hosts
 and models without tool support use ordinary chat.
 
-Each adapter owns one typed tool transcript. Claude uses the current
-[computer toolset](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
-on supported models and custom function tools otherwise. Rejected toolsets fall back to custom
-tools. OpenAI-compatible servers preserve extra assistant fields, including Gemini thought
-signatures. Ollama gets capabilities from `/api/show`; local llama.cpp servers expose `/props`.
-Other compatible servers get a cached two-color vision check. Capability checks do not capture
-the desktop. Tool sessions retain the same conversation history as ordinary chat. OpenAI and
-Ollama keep only the latest screenshot; Claude transcripts are append-only. Compatibility errors
-before any action fall back to ordinary chat, which retains empty-reply and repetition retries.
+### Tools
 
-The loop executes batches sequentially, skips later calls after a failure, and caps each task at
-20 actions or 180 seconds after the first tool call, so model loading uses the provider timeout.
-Before the first action, `yieldFocus` hides the plugin popup and returns focus to the previous app.
-A message-only window receives queued Raw Input during computer turns. It ignores Lilith's
-marked input; player keyboard or mouse input aborts actions and model requests. Raw Input does
-not block other apps or silently time out during capture or garbage collection. A new message
-stops a turn that has acted; a superseded turn that has not acted still answers without tools.
-Settings changes also prevent further actions while preserving ordinary pending replies.
-Disconnect and shutdown stop the turn, including provider retry waits. Watcher failures report an error.
-A stopped task needs a new request to continue. Only the user message and final reply enter memory.
+The tools are shaped for a 4B local model, because a small model is only good at what it was
+trained on. Defined in `computer/actions.ts`.
 
-`computer/windows.ts` uses `bun:ffi` with user32, gdi32 and kernel32. Screenshots cover the primary
-display, encode opaque RGB PNGs and resize to a maximum edge of 1280 pixels. Input coordinates are
-mapped back to physical pixels and normalized across the virtual desktop. Every capture handle
-is released, and keys and drag buttons are released when a task stops. Start apps are matched
-by localized names and launched with argument arrays, never a shell command supplied by the model.
-App lookup enumerates the Shell apps folder with fixed inline PowerShell commands and works with
-Restricted execution policy without loading script modules or changing the user's policy.
-App and URL launches wait up to five seconds for an identifiable foreground window to change;
-otherwise dependent actions fail. Opening a target already in the foreground can therefore
-report a focus error. Blind keyboard results report the focused executable. Logical mouse buttons
-honor Windows' primary-button setting.
-Keyboard input into terminals, system tools, Run dialogs, Start/search hosts, PowerToys command
-launchers and the popup is blocked; Run and Task Manager app launches, Win+R, Win+X, Win+S, Win+Q,
-bare Win and Ctrl+Esc are refused.
-Explorer's address bar, command fields inside other apps and terminal mouse-paste actions remain
-protected by the prompt. Asking before consequential
-actions is a prompt rule, not a native transaction detector. Input into elevated apps can be
-blocked by Windows; a successful input submission cannot prove that an app handled it.
+- **`computer_use`** mirrors the tool in Qwen3-VL's computer-use cookbook, wording included: one
+  function with an `action` (`left_click`, `type`, `key`, `scroll`, `terminate`…), `coordinate`,
+  `keys`, `pixels`, `time`. It says the screen is 1000×1000, so coordinates come on the 0–1000 grid
+  Qwen-VL and Gemini models point with, whatever the real resolution. Asked for pixels in a
+  1280×720 image, qwen3-vl:4b-instruct still wrote grid numbers, so on ten mock Windows screens none
+  of its first clicks landed (and four calls didn't fit the old `{x, y}` schema). With this tool,
+  nine of ten did. `screenshot` is added, because nothing is captured until the model acts. Blind
+  models get only `key`, `type`, `wait`, `terminate` and `answer`.
+- **`open_app`**, **`open_url`**, and **`window`** (`list`, `focus`, `maximize`, `minimize`,
+  `close`): finding an app or window by name is more reliable for a small model than finding it
+  on screen.
+- Small models drift from a schema, and each rejected call costs a step. So parsing accepts the
+  usual near misses: an action called as a tool of its own, `click` for `left_click`, points as
+  `[x, y]`, `{x, y}` or `"(x, y)"`, keys as an array or a string, pyautogui key names (`pgdn`,
+  `winleft`), wheel notches or pixels for `pixels`, a URL without `https://`. Anything else
+  is an error the model reads.
+- Claude uses the current
+  [computer toolset](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
+  (pixels, explicit screenshots) on supported models, plus `open_app`, `open_url` and `window`.
+  Rejected toolsets fall back to the custom tools.
+
+### Acting instead of talking
+
+Every message goes through the tool session while computer control is on, so one request decides
+between chatting and acting. The reply format used to tell the model to *start* with an emotion
+tag. With that, qwen3-vl:4b-instruct answered none of 12 PC requests with a tool call: it asked
+whether it should, or said it was done. The tag's `[` left no room for a tool call. Moving the
+rule or rewording it changed nothing; dropping it did.
+
+- With PC tools, the format asks for the tag at the *end* of a reply. The same requests then got 12
+  of 12 tool calls, and casual messages still got words (8 of 8). `parseReply` takes the tag
+  wherever it is. Without tools, the format is unchanged. Don't move the tag back to the start.
+- The note before the latest message says to act rather than ask, or claim it's done.
+- The rules give two worked examples ("turn on Bluetooth" means Settings plus its switch; a YouTube
+  search means `open_url` with the results address). Without them, the model asked which device
+  to connect instead of opening Settings.
+- An `answer` or `terminate` before anything has happened is sent back once, telling the model to
+  act if that was the request. A second one stands, so a plain question still gets its answer.
+- A misplaced call is still taken: another tool named as the action
+  (`{"action": "open_app", …}`), the keys themselves (`{"action": "ctrl+w"}`), or fields wrapped
+  in another `arguments` object.
+- Built-in apps also answer to their English names on any Windows ("Notepad" for "Bloc de notas"),
+  matched by AppID, which doesn't change with the language. A website asked for as an app gets
+  pointed to `open_url`.
+
+### Sessions
+
+Each adapter owns one typed tool transcript. OpenAI-compatible servers preserve extra assistant
+fields, including Gemini thought signatures. Ollama gets capabilities from `/api/show`; local
+llama.cpp servers expose `/props`. Other compatible servers get a cached two-color vision check.
+Capability checks do not capture the desktop. Tool sessions retain the same conversation history as
+ordinary chat. OpenAI and Ollama keep only the latest screenshot; Claude transcripts are
+append-only. Compatibility errors before any action fall back to ordinary chat, which retains
+empty-reply and repetition retries.
+
+- The first request decides between chatting and acting, at the player's temperature. Once there
+  are tool results, requests use at most 0.3: steady coordinates and well-formed calls matter more
+  than variety.
+- Ollama answers HTTP 500 when the model writes a tool call it can't parse. That's sampling noise,
+  so the request is retried up to twice, 0.3 warmer each time. Before, it fell back to ordinary
+  chat, where she could claim to have done the task.
+- A call a server left in the reply text, in the `<tool_call>` format Qwen and Hermes models write
+  (or as a bare JSON reply naming one of the tools), is recovered as a real call. OpenAI-compatible
+  transcripts record it as a tool call, because tool results must follow one.
+
+### The loop
+
+`computer/agent.ts` executes batches sequentially, skips later calls after a failure, and caps each
+task at 40 actions or 8 minutes after the first tool call, so model loading uses the provider
+timeout. Before the first action, `yieldFocus` hides the plugin popup and returns focus to the
+previous app.
+
+With custom tools, the model gets feedback after every batch, which a small model needs to notice a
+missed click instead of claiming success:
+- One screenshot, after 400 ms (1 s after a launch or window switch). Its caption restates the
+  host's request and how many actions are left, since by then the request may have scrolled far up
+  the transcript, or out of an 8k context.
+- The active window's title and app.
+- "The screen did not change", when the screenshot is identical to the previous one.
+
+Two guards turn a small model's typical mistakes into a message instead of a wrong click:
+- Coordinates picked before the model has seen the screen, or after an earlier action in the same
+  batch changed it, are refused, and the new screenshot comes with the error.
+- An action identical to the previous one, after which the screen did not change, is refused with a
+  nudge to try another way. Waiting again is exempt: a slow app often looks the same while it loads.
+  A small model can ignore the nudge and retry until the action cap, so the third refusal ends the
+  task, and the model is asked to tell its host what it managed and where it got stuck.
+
+`terminate` or `answer` ends the task: the model is asked for its reply, and further calls end the
+turn with the answer as the reply.
+
+A message-only window receives queued Raw Input during computer turns. It ignores Lilith's marked
+input; player keyboard or mouse input aborts actions and model requests. Raw Input does not block
+other apps or silently time out during capture or garbage collection. A new message stops a turn
+that has acted; a superseded turn that has not acted still answers without tools. Settings changes
+also prevent further actions while preserving ordinary pending replies. Disconnect and shutdown stop
+the turn, including provider retry waits. Watcher failures report an error. A stopped task needs a
+new request to continue. Only the user message and final reply enter memory.
+
+### Windows
+
+`computer/windows.ts` uses `bun:ffi` with user32, gdi32, kernel32 and dwmapi. Screenshots cover the
+primary display, encode opaque RGB PNGs and resize to a maximum edge of 1280 pixels. Input
+coordinates are mapped back to physical pixels and normalized across the virtual desktop. Every
+capture handle is released, and keys and drag buttons are released when a task stops. Logical mouse
+buttons honor Windows' primary-button setting.
+
+- **Apps.** Start apps are matched by localized names, ignoring accents, a trailing `.exe`, and
+  extra words around a name ("the Google Chrome browser"). They're launched with argument arrays,
+  never a shell command supplied by the model. App lookup enumerates the Shell apps folder with fixed
+  inline PowerShell commands and works with Restricted execution policy without loading script
+  modules or changing the user's policy.
+- **Launches** wait up to five seconds for a new identifiable foreground window; otherwise
+  dependent actions fail. After 1.5 s, the window already in front counts if it's the target: for
+  an app, its executable is named after it or its title ends with its name, as Windows apps title
+  themselves (a browser tab merely about the app doesn't count); for a link, a known browser in
+  front whose title changed.
+- **Windows.** `window` sees what Alt+Tab shows: visible, uncloaked, unowned top-level windows with a
+  title, front to back, except Lilith's own (the game and the popup) and terminals or system tools,
+  which she may not open either. Those are recognized by executable and console window class, never
+  by title, since a browser tab's title can mention PowerShell. Names match a title or
+  executable, whole before partial, frontmost first. Focusing restores a minimized window and sends
+  an empty mouse event first, as PowerToys does: Windows only lets the process behind the latest
+  input change the foreground window, and an Alt tap would open menu bars. `close` posts `WM_CLOSE`,
+  like the window's X, so the app can still ask to save. Without a title, these act only on an app
+  window, never the desktop or taskbar, where `WM_CLOSE` means shut down.
+- **Guards.** Keyboard input into terminals (including consoles Windows reports under their client,
+  such as `python.exe`), system tools, Run dialogs, Start/search hosts, PowerToys command launchers,
+  the popup and the game is blocked. The game is often in front once the popup hands focus back, and
+  Alt+F4 there would end the companion. Run and Task Manager app launches, Win+R, Win+X, Win+S,
+  Win+Q, bare Win and Ctrl+Esc are refused, whatever the key is called. Explorer's address bar,
+  command fields inside other apps and terminal mouse-paste actions remain protected by the prompt.
+  Asking before consequential actions is a prompt rule, not a native transaction detector. Input into
+  elevated apps can be blocked by Windows; a successful input submission cannot prove that an app
+  handled it.
 
 The companion remains in the plugin's kill-on-close job. `SILENT_BREAKAWAY_OK` lets processes it
 starts survive the game closing. `computerCheck` reports capabilities, and `/api/ping` reports

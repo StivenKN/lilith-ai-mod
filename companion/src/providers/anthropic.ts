@@ -97,18 +97,23 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
         async next(results, http) {
           if (off.has("tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
           if (results.length) {
+            // An error result may hold only text, so its screenshot follows the results instead.
+            const after: Array<BetaTextBlockParam | BetaImageBlockParam> = [];
             const content: BetaToolResultBlockParam[] = results.map((result) => {
               const blocks: Array<BetaTextBlockParam | BetaImageBlockParam> = [{ type: "text", text: result.text }];
-              if (result.image) blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from(result.image).toString("base64") } });
+              const seen: Array<BetaTextBlockParam | BetaImageBlockParam> = [];
+              if (result.image) seen.push({ type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from(result.image).toString("base64") } });
+              if (result.caption) seen.push({ type: "text", text: result.caption });
+              (result.isError ? after : blocks).push(...seen);
               const toolset = pending.find((call) => call.id === result.id)?.toolset;
               return { type: "tool_result", tool_use_id: result.id, content: blocks, ...(result.isError ? { is_error: true } : {}), ...(toolset ? { toolset_name: toolset } : {}) };
             });
-            messages.push({ role: "user", content });
+            messages.push({ role: "user", content: [...content, ...after] });
           }
           for (let attempt = 0; ; attempt++) {
             const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
             const tools: BetaToolUnion[] = computerTools(request.vision)
-              .filter((tool) => !toolset || ["open_app", "open_url"].includes(tool.name))
+              .filter((tool) => !toolset || tool.name !== "computer_use")
               .map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
             if (toolset) tools.unshift({ type: "computer_toolset_20260801", configs: { hold_key: { enabled: false }, left_mouse_down: { enabled: false }, left_mouse_up: { enabled: false } } });
             try {

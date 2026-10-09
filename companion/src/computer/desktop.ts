@@ -15,6 +15,7 @@ export interface Desktop {
   cursor(): Point;
   foreground(): Foreground;
   watchInput(): InputWatch;
+  /** Performs an action; a returned string replaces "OK" as the model's result (a window list, say). */
   execute(action: Action, signal: AbortSignal): Promise<string | void>;
   close(): void;
 }
@@ -26,7 +27,7 @@ export class FakeDesktop implements Desktop {
   screen = { width: 1280, height: 720 };
   actions: Action[] = [];
   inputVersion = 0;
-  focused: Foreground = { exe: "notepad.exe", className: "Notepad" };
+  focused: Foreground = { exe: "notepad.exe", className: "Notepad", title: "Untitled - Notepad" };
   capture(region?: Region): Uint8Array {
     const size = screenshotSize(region ?? this.screen);
     const bgra = new Uint8Array(size.width * size.height * 4).fill(100);
