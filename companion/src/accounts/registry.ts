@@ -30,8 +30,8 @@ export const catalog = [
     facets: ["mail", "files", "calendar"],
     power: "read",
     help: {
-      en: "Sign in with Google. Lilith can read your Gmail, Drive and Calendar when you ask her to; she never writes or sends anything. On Google's page, untick anything she shouldn't see.",
-      es: "Inicia sesión con Google. Lilith puede leer tu Gmail, Drive y Calendar cuando se lo pidas; nunca escribe ni envía nada. En la página de Google, desmarca lo que no quieras que vea.",
+      en: "Lilith can read your Gmail, Drive and Calendar when you ask her to; she never writes or sends anything. On Google's page, untick anything she shouldn't see.",
+      es: "Lilith puede leer tu Gmail, Drive y Calendar cuando se lo pidas; nunca escribe ni envía nada. En la página de Google, desmarca lo que no quieras que vea.",
     },
   },
 ] as const satisfies readonly CatalogEntry[];

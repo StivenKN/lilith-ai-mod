@@ -1131,6 +1131,83 @@ label.button[aria-disabled="true"] {
   rotate: -0.4deg;
 }
 
+/* ── Accounts ──────────────────────────────────────────── */
+
+.accounts {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  gap: 16px;
+}
+.account {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #ffffff;
+  border: 2px solid var(--wall-deep);
+  border-radius: 16px;
+}
+.account > p,
+.account .toggle,
+.account .field {
+  margin: 0;
+}
+.account > button {
+  justify-self: start;
+}
+.account-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+.account-head strong {
+  font-size: 18px;
+}
+.account-status {
+  padding: 1px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--wall);
+  color: var(--ink-soft);
+}
+.account-status[data-status="ok"] {
+  background: var(--mint-wash);
+  color: var(--mint);
+}
+.account-status[data-status="reconnect"] {
+  background: var(--star-wash);
+  color: var(--ink);
+}
+.account-facets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+}
+.toggle:has(input:disabled) {
+  cursor: default;
+}
+.toggle input:disabled {
+  opacity: 0.45;
+}
+.account-found {
+  margin-top: 10px;
+}
+.account-found > strong {
+  display: block;
+}
+.account-found ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.account-found details p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
 /* ── Voice ─────────────────────────────────────────────── */
 
 input[type="range"] {

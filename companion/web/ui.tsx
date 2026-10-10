@@ -33,10 +33,10 @@ export function Field(props: { label: string; hint?: ReactNode; children: ReactN
   );
 }
 
-export function Toggle(props: { checked: boolean; onChange: (checked: boolean) => void; label: string; hint?: string }) {
+export function Toggle(props: { checked: boolean; onChange: (checked: boolean) => void; label: string; hint?: string | undefined; disabled?: boolean }) {
   return (
     <label className="toggle">
-      <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} />
+      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.target.checked)} />
       <span>
         {props.label}
         {props.hint ? <small className="hint" style={{ display: "block" }}>{props.hint}</small> : null}
