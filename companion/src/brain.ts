@@ -632,6 +632,7 @@ export class Brain {
         if (!(error instanceof ProviderError && error.kind === "no_tools")) throw error;
         // No probe asked the model first: a rejection here is how she learns, and her accounts stay closed this turn.
         this.#log.warn(`${settings.model} rejected the lookup tools; answering without her accounts`);
+        if (config === this.options.config.current) this.#computerCapabilities = { tools: false, vision: this.#computerCapabilities?.vision ?? false };
         open = open.withoutTools();
         context = this.#promptContext(language, open.facets);
         request = requestFor(context);

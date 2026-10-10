@@ -252,6 +252,19 @@ describe("Connected accounts", () => {
     expect(second!.messages[0]!.content).not.toContain("con email");
   });
 
+  test("a model that rejects the lookup tools in a plain chat turn is remembered as one without tools", async () => {
+    respond = async (request) => {
+      const body = (await request.json()) as { tools?: unknown };
+      if (body.tools) return Response.json({ error: { message: "This model does not support tools" } }, { status: 400 });
+      return reply("[neutral] Solo puedo conversar.");
+    };
+    const { brain, config } = await setup("mail-rejects-remembered", { accounts });
+    await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-rejects", configured: true }, features: { learnFacts: false }, search: { mode: "local" } });
+    expect(brain.snapshot().computer.tools).toBeUndefined();
+    expect(await brain.chat("¿qué me escribió Laura?", "game")).toMatchObject({ ok: true, text: "Solo puedo conversar." });
+    expect(brain.snapshot().computer.tools).toBe(false);
+  });
+
   test("once the AI is an Ollama cloud model, what she read from an account kept local stays out of its context", async () => {
     respond = ollama("mail-local", ["tools"]);
     const { brain, config, memory } = await setup("mail-cloud", { accounts });
