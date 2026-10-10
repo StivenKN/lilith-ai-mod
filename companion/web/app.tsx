@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { call, useRpc, useServerEvents, type Output } from "./api.ts";
+import { AccountsPage } from "./pages/accounts.tsx";
 import { CardsPage } from "./pages/cards.tsx";
 import { ChatPage } from "./pages/chat.tsx";
 import { GamePage } from "./pages/game.tsx";
@@ -11,8 +12,12 @@ import { VoicePage } from "./pages/voice.tsx";
 import { LocaleContext, Note, useTr } from "./ui.tsx";
 import type { UiLocale } from "../src/languages.ts";
 
-const tabs = ["chat", "lilith", "cards", "voice", "ai", "game", "help"] as const;
+const tabs = ["chat", "lilith", "cards", "accounts", "voice", "ai", "game", "help"] as const;
 type Tab = (typeof tabs)[number];
+
+/** The tab a link names, as in `/#accounts?result=connected` when Google sends the player back. */
+export const linkedTab = (hash: string): Tab | undefined => tabs.find((id) => hash.slice(1).split("?")[0] === id);
+
 export type Overview = Output<"overview">;
 
 export function App() {
@@ -38,8 +43,10 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
   const tr = useTr();
   const { overview } = props;
   const inSetup = overview.app.mode === "setup";
-  const [wizard, setWizard] = useState(inSetup || !overview.config.provider.configured);
-  const [tab, setTab] = useState<Tab>("chat");
+  const [linked] = useState(() => linkedTab(location.hash));
+  // A link back to a tab came from that tab, so the setup exe's wizard was already behind the player.
+  const [wizard, setWizard] = useState((inSetup && !linked) || !overview.config.provider.configured);
+  const [tab, setTab] = useState<Tab>(linked ?? "chat");
   const connected = overview.brain.connected;
 
   const setLanguage = async (uiLanguage: UiLocale) => {
@@ -89,6 +96,7 @@ function Shell(props: { overview: Overview; tick: number; refresh: () => void })
             {tab === "chat" && <ChatPage overview={overview} tick={props.tick} />}
             {tab === "lilith" && <LilithPage overview={overview} tick={props.tick} refresh={props.refresh} />}
             {tab === "cards" && <CardsPage overview={overview} refresh={props.refresh} tick={props.tick} />}
+            {tab === "accounts" && <AccountsPage overview={overview} tick={props.tick} />}
             {tab === "voice" && <VoicePage overview={overview} refresh={props.refresh} />}
             {tab === "ai" && <ProviderPage overview={overview} refresh={props.refresh} />}
             {tab === "game" && <GamePage overview={overview} refresh={props.refresh} openWizard={() => setWizard(true)} />}

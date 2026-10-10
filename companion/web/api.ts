@@ -48,7 +48,7 @@ export async function startSession(): Promise<void> {
   history.replaceState(null, "", url.pathname + url.hash);
 }
 
-/** Live server events: log lines and "something changed" pings from the brain, the updater and the settings. */
+/** Live server events: log lines and "something changed" pings from the brain, the updater, the settings and the accounts. */
 export function useServerEvents(onLog: ((entry: LogEntry) => void) | null, onChange: () => void) {
   useEffect(() => {
     const source = new EventSource("/api/events");
@@ -56,6 +56,7 @@ export function useServerEvents(onLog: ((entry: LogEntry) => void) | null, onCha
     source.addEventListener("brain", () => onChange());
     source.addEventListener("update", () => onChange());
     source.addEventListener("config", () => onChange());
+    source.addEventListener("accounts", () => onChange());
     return () => source.close();
   }, [onLog, onChange]);
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One isolated verification run of the Lilith AI companion: mock AI + companion + headless Chrome.
+# One isolated verification run of the Lilith AI companion: mock AI + mock Google + companion + headless Chrome.
 #
 #   session.sh up [game|dashboard] [--fresh]
 #                                    start a run (default "game": sim.ts plays the game plugin in tmux);
@@ -45,8 +45,9 @@ up() {
   mkdir -p "$RUN/data" "$RUN/chrome" "$RUN/evidence"
   ln -sfn "$RUN" "$ROOT/current"
 
-  local mock_port cdp_port tmux_session="lilith-verify-$id"
+  local mock_port google_port cdp_port tmux_session="lilith-verify-$id"
   mock_port="$(free_port)"
+  google_port="$(free_port)"
   cdp_port="$(free_port)"
 
   # The mock AI (OpenAI API at /v1, Ollama API at /api). "?q" asks for a search, "!" a computer tool,
@@ -54,6 +55,12 @@ up() {
   nohup bun "$COMPANION/scripts/mock-llm.ts" "$mock_port" >"$RUN/mock-llm.log" 2>&1 &
   echo $! >"$RUN/mock.pid"
   wait_for 10 curl -sf "http://127.0.0.1:$mock_port/v1/models" || { echo "mock AI did not start; see $RUN/mock-llm.log" >&2; exit 1; }
+
+  # The fake Google behind "Sign in with Google": consent page, tokens, and mail, Drive and Calendar
+  # fixtures (see the header of companion/scripts/mock-google.ts and features/accounts.md).
+  nohup bun "$COMPANION/scripts/mock-google.ts" "$google_port" >"$RUN/mock-google.log" 2>&1 &
+  echo $! >"$RUN/google.pid"
+  wait_for 10 curl -s -o /dev/null "http://127.0.0.1:$google_port/" || { echo "mock Google did not start; see $RUN/mock-google.log" >&2; exit 1; }
 
   # A configured AI so the dashboard skips the setup wizard, English UI, no self-updates.
   # --fresh leaves the AI unconfigured, as on a first install (features/setup-wizard.md).
@@ -71,7 +78,9 @@ JSON
   local cmd
   if [[ "$mode" == game ]]; then cmd="bun scripts/sim.ts en"; else cmd="bun src/main.ts --dev --no-open"; fi
   tmux new-session -d -s "$tmux_session" -x 200 -y 50 -c "$COMPANION" \
-    -e "LILITH_AI_DATA_DIR=$RUN/data" -e "LILITH_AI_FAKE_DESKTOP=1" "$cmd; sleep 86400"
+    -e "LILITH_AI_DATA_DIR=$RUN/data" -e "LILITH_AI_FAKE_DESKTOP=1" \
+    -e "LILITH_AI_GOOGLE_URL=http://127.0.0.1:$google_port" -e "LILITH_GOOGLE_CLIENT_ID=mock" -e "LILITH_GOOGLE_CLIENT_SECRET=mock" \
+    "$cmd; sleep 86400"
   tmux pipe-pane -t "$tmux_session" -o "cat >>'$RUN/evidence/terminal.log'"
   wait_for 30 test -s "$RUN/data/instance.json" || { echo "companion did not start; see $RUN/data/logs/lilith-ai.log" >&2; tmux capture-pane -p -t "$tmux_session" >&2; exit 1; }
 
@@ -95,6 +104,7 @@ DASHBOARD_PORT=$port
 LOGIN_URL=$login
 COMPANION_PID=$companion_pid
 MOCK_PORT=$mock_port
+GOOGLE_PORT=$google_port
 CDP_PORT=$cdp_port
 TMUX_SESSION=$tmux_session
 EVIDENCE=$RUN/evidence
@@ -124,6 +134,7 @@ doctor() {
   check "companion mode is $expected_mode" grep -q "\"mode\":\"$expected_mode\"" <<<"$ping"
   check "port belongs to this run (instance.json)" grep -q "\"pid\":$COMPANION_PID,\"port\":$DASHBOARD_PORT" <<<"$instance"
   check "mock AI on :$MOCK_PORT" curl -sf "http://127.0.0.1:$MOCK_PORT/v1/models"
+  check "mock Google on :$GOOGLE_PORT" curl -s -o /dev/null "http://127.0.0.1:$GOOGLE_PORT/"
   check "headless Chrome CDP on :$CDP_PORT" curl -sf "http://127.0.0.1:$CDP_PORT/json/version"
   check "tmux session $TMUX_SESSION" tmux has-session -t "$TMUX_SESSION"
   ((ok)) || { echo "log tail:"; tail -n 15 "$LILITH_AI_DATA_DIR/logs/lilith-ai.log" 2>/dev/null; exit 1; }
@@ -137,12 +148,12 @@ down() {
   # SIGTERM covers dashboard mode. Only pids this run recorded are signalled.
   tmux send-keys -t "$TMUX_SESSION" C-c 2>/dev/null || true
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-  for name in companion mock chrome; do
+  for name in companion mock google chrome; do
     local pid; pid="$(cat "$RUN/$name.pid" 2>/dev/null || true)"
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
   sleep 1
-  for name in companion mock chrome; do
+  for name in companion mock google chrome; do
     local pid; pid="$(cat "$RUN/$name.pid" 2>/dev/null || true)"
     [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
   done

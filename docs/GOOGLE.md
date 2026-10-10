@@ -40,13 +40,18 @@ and the flow also uses PKCE.
 
 - The consent screen stays in **Testing** until Google verifies the restricted scopes. In Testing,
   only the **test users** you list can sign in (up to 100), Google shows the "unverified app"
-  warning, and refresh tokens expire after 7 days. The account then shows "connect again" in the
-  dashboard. Connecting again keeps the player's choices (the facets they narrowed to, the online
-  opt-in), and every sign-in asks for every scope afresh, so a scope they untick stays unticked.
+  warning, and refresh tokens expire after 7 days. The account then shows "Signed out" and a
+  "Sign in again" button on the Accounts tab. Connecting again keeps the player's choices (the
+  facets they narrowed to, the online opt-in), and every sign-in asks for every scope afresh, so a
+  scope they untick stays unticked.
 - Publishing the app without verification keeps the warning and caps the client at 100 users for
   its lifetime.
 - Verification for `gmail.readonly` and `drive.readonly` needs a privacy policy URL, a demo video
   of the flow, and a security assessment. Start it once the feature is settled.
+- The Accounts tab tells players to expect the warning and names its links: **Advanced**, then
+  **Go to Lilith AI** (`accounts.unverified` in `companion/src/i18n.ts`). If the consent screen's
+  app name doesn't start with "Lilith AI", change that string to match, and drop the warning part
+  once verification passes.
 
 ## Testing without Google
 

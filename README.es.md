@@ -36,6 +36,10 @@ responde en su globo de diálogo, con su personalidad, en tu idioma, y recuerda 
 - **Búsqueda en internet** (opcional). Puede buscar noticias, clima, precios y otros datos
   actuales: gratis desde tu PC (DuckDuckGo, sin cuenta) o con [Firecrawl](https://www.firecrawl.dev)
   y tu clave de API. Actívala en **IA → Búsqueda en internet**.
+- **Tus cuentas** (opcional). Inicia sesión con Google en la pestaña **Cuentas** del panel y Lilith
+  podrá responderte con tu Gmail, Drive y Calendar cuando se lo pidas («¿Laura ya me contestó?»,
+  «¿qué dice mi hoja de presupuesto?»). Solo lee, nunca cambia ni envía nada, y tú eliges qué puede
+  leer. **Probar** te muestra exactamente lo que encontraría.
 - **Se actualiza solo.** Las versiones nuevas se instalan en segundo plano y se aplican la próxima
   vez que abres el juego (puedes desactivarlo en **Juego → Instalación**).
 - **Errores claros.** Si algo falla, Lilith no inventa una excusa: el globo dice qué pasó y cómo
@@ -104,6 +108,13 @@ exacto y cómo resolverlo. Los modelos se cargan desde el servicio, así que sie
   ella elige buscar, nunca tu conversación.
 - Para buscar actualizaciones, el mod le pide a GitHub la lista de versiones cada pocas horas; no
   envía nada sobre ti.
+- Con una cuenta conectada en **Cuentas**, Lilith solo mira en ella para responder un mensaje tuyo,
+  nunca cuando habla por iniciativa propia ni cuando escribe una tarjeta. Las palabras que busca van
+  a Google, a tu propia cuenta. Lo que encuentra solo va a la IA que escribe su respuesta, y nunca
+  entra en sus notas sobre ti, en el resumen de la conversación ni en sus tarjetas. Una IA en línea
+  solo lee una cuenta, o lo que Lilith te contó de ella, si activas **La IA en línea puede leer esta
+  cuenta** en ella. Tu inicio de sesión se queda en tu PC, en `%APPDATA%\LilithAICompanion\accounts\`;
+  **Desconectar** lo borra y le pide a Google que le quite el acceso.
 - El control del PC se activa automáticamente con IA local o de tu red. Con servicios en línea
   está desactivado hasta que lo actives en **Lilith → Usar tu PC**. Cuando le pidas una tarea,
   Lilith puede identificar la app enfocada y enviar capturas de la pantalla principal al servidor
