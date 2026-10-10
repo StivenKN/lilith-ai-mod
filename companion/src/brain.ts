@@ -42,10 +42,11 @@ import {
 import { createProvider, isLocalProvider, ProviderError, type ErrorKind, type Provider } from "./providers/index.ts";
 import type { ProviderSettings } from "./providers/index.ts";
 import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/ollama.ts";
-import { getPreset, isLocalUrl } from "./providers/presets.ts";
+import { getPreset } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { paginate, parseReply, repeatedSentences, withoutSentences } from "./reply.ts";
 import type { Facet } from "./lookup/facets.ts";
+import { audienceOf } from "./lookup/gate.ts";
 import { openShelf, stripLookupTags, type Found, type LookupRequest, type Shelf } from "./lookup/shelf.ts";
 import type { SpokenLanguage } from "./voice/catalog.ts";
 import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
@@ -1129,7 +1130,7 @@ const withNote = (turns: readonly ChatTurn[], context: PromptContext, found?: Fo
   turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: withTurnNote(context, turn.content, found) } : turn));
 
 export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
-  mode === "on" || (mode === "auto" && isLocalUrl(settings.baseUrl));
+  mode === "on" || (mode === "auto" && audienceOf(settings) === "local");
 const hotkeyLabel = (hotkey: Hotkey) => [hotkey.ctrl && "Ctrl", hotkey.alt && "Alt", hotkey.shift && "Shift", hotkey.key].filter(Boolean).join("+");
 
 /** Label used in error messages: the preset name, or the host for custom servers. */

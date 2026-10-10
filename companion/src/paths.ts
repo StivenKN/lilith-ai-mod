@@ -27,6 +27,8 @@ export const dataPaths = (root = dataDir()) => ({
   browserExtension: join(root, "browser-extension"),
   /** Written by the running instance so a second launch can hand off to it. */
   instance: join(root, "instance.json"),
+  /** Connected accounts, two files each: <id>.json (settings) and <id>.secret (accounts/store.ts). */
+  accounts: join(root, "accounts"),
 });
 
 export type DataPaths = ReturnType<typeof dataPaths>;
