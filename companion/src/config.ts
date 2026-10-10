@@ -120,6 +120,7 @@ export class ConfigStore {
   /** What's on disk as of our last read or write, to tell our own saves from someone else's. */
   #savedText: string | null = null;
   #listeners = new Set<(config: Config) => void>();
+  #lastSaveSettled: Promise<void> = Promise.resolve();
   #watcher: FSWatcher | null = null;
   #reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -151,8 +152,17 @@ export class ConfigStore {
     return this.#config;
   }
 
-  /** Applies a deep-ish patch (one level of nesting), validates, saves, and notifies listeners. */
-  async update(patch: SettingsPatch): Promise<Config> {
+  /**
+   * Applies a deep-ish patch (one level of nesting), validates, saves, and notifies listeners.
+   * Saves run one at a time in call order, so each merges into the result of the one before.
+   */
+  update(patch: SettingsPatch): Promise<Config> {
+    const saved = this.#lastSaveSettled.then(() => this.#save(patch));
+    this.#lastSaveSettled = saved.then(() => {}, () => {});
+    return saved;
+  }
+
+  async #save(patch: SettingsPatch): Promise<Config> {
     const merged: Record<string, unknown> = { ...this.#config };
     for (const [key, value] of Object.entries(patch)) {
       const previous = merged[key];
@@ -233,10 +243,12 @@ export async function readTextFile(path: string): Promise<string | null> {
   }
 }
 
+let nextTempId = 0;
+
 /** Write to a temp file then rename, so a crash never leaves a half-written file. */
 export async function writeAtomic(path: string, contents: string | Uint8Array): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
+  const temp = `${path}.${process.pid}.${nextTempId++}.tmp`;
   await writeFile(temp, contents, "utf8");
   await rename(temp, path);
 }
