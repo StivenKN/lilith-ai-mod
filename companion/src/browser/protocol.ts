@@ -36,6 +36,8 @@ export const RawElement = z.object({
   selected: z.boolean().optional(),
   focused: z.boolean().optional(),
   level: z.number().int().min(1).max(6).optional(),
+  /** In the site's navigation, a sidebar or the footer: listed after the page's own content. */
+  menu: z.boolean().optional(),
   /** In an open dialog, in the viewport, or scrolled past it. */
   where: z.enum(["dialog", "view", "above", "below"]),
 });

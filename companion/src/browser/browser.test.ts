@@ -105,6 +105,17 @@ describe("page format", () => {
     expect(shown!.refs.has(89)).toBe(false);
   });
 
+  test("the page's content comes before a sidebar that precedes it, and menus that don't fit are counted apart", () => {
+    const channels = Array.from({ length: 80 }, (_, index) => element(10 + index, { tag: "a", text: `Subscribed channel ${index}`, menu: true }));
+    const videos = Array.from({ length: 3 }, (_, index) => element(100 + index, { tag: "a", text: `Video ${index}` }));
+    const { text, shown } = formatLook(look([element(1, { role: "combobox", aria: "Search" }), ...channels, ...videos]), { read: false });
+    const lines = text.split("\n");
+    expect(lines.slice(2, 6)).toEqual(['[1] combobox "Search"', '[100] link "Video 0"', '[101] link "Video 1"', '[102] link "Video 2"']);
+    expect(lines[6]).toBe("Menus:");
+    expect(shown?.refs.has(10)).toBe(true);
+    expect(lines.at(-1)).toMatch(/^… and \d+ more in the site's menus\.$/);
+  });
+
   test("reading swaps the elements for the text, and browser pages can't be used", () => {
     const read = formatLook(look([element(1)], { text: "Line one\n\n\nLine two", more: true }), { read: true });
     expect(read.text).toContain("Text from where the page is scrolled to:\nLine one\nLine two\n… There is more below");

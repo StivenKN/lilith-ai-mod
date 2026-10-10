@@ -36,6 +36,10 @@ const INTERACTIVE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(", ");
 const HEADINGS = 'h1, h2, h3, [role="heading"]';
+// Controls inside a link or button do what it does: listing both would show everything twice.
+const CONTROLS = 'a[href], button, [role="link"], [role="button"]';
+const MENUS = 'nav, [role="navigation"], aside, [role="complementary"], footer, [role="contentinfo"]';
+const CONTENT = 'main, [role="main"], article';
 const DIALOGS = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
 const MAX_ELEMENTS = 300;
 const MAX_TEXT = 8000;
@@ -142,18 +146,21 @@ function create(): PageApi {
       expanded: expanded === null ? (tag === "summary" ? (element.parentElement as HTMLDetailsElement | null)?.open : undefined) : expanded === "true",
       selected: element.getAttribute("aria-selected") === "true" || undefined,
       focused: element === focused() || undefined,
+      menu: inMenu(element) || undefined,
       ...(!ref && element.matches(HEADINGS) ? { level: Math.min(6, headingLevel(element)) } : {}),
     };
     // Undefined fields would only cost bytes.
     return Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined)) as RawElement;
   }
 
-  const interactiveAncestor = (element: Element) => {
-    for (let node: Element | null = element; node; node = node.parentElement ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null)) {
-      if (node.matches(INTERACTIVE)) return node;
-    }
+  const parentOf = (node: Element) => node.parentElement ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null);
+  /** The nearest of `element` and its ancestors matching `selector`, crossing shadow roots. */
+  const closest = (element: Element | null, selector: string) => {
+    for (let node = element; node; node = parentOf(node)) if (node.matches(selector)) return node;
     return null;
   };
+  /** Whether the nearest landmark around `element` is navigation, a sidebar or the footer rather than the page's content. */
+  const inMenu = (element: Element) => closest(element, `${MENUS}, ${CONTENT}`)?.matches(MENUS) ?? false;
 
   /** The element under a point, inside shadow roots too. */
   const hitAt = (x: number, y: number) => {
@@ -174,7 +181,7 @@ function create(): PageApi {
     const hit = hitAt(point.x, point.y);
     const labelled = element instanceof HTMLInputElement && Array.from(element.labels ?? []).some((label) => within(hit, label));
     if (hit && (within(hit, target) || within(target, hit) || labelled)) return point;
-    const cover = hit && (interactiveAncestor(hit) ?? hit.closest(DIALOGS) ?? hit);
+    const cover = hit && (closest(hit, INTERACTIVE) ?? hit.closest(DIALOGS) ?? hit);
     return { failed: "covered", ...(cover ? { element: describe(cover, "view", cover.matches(INTERACTIVE) ? refFor(cover) : undefined) } : {}) };
   }
 
@@ -220,6 +227,7 @@ function create(): PageApi {
         const heading = !interactive && element.matches(HEADINGS) && headingLevel(element) <= 3;
         const frame = element.tagName === "IFRAME";
         if (!interactive && !heading && !frame) continue;
+        if (interactive && closest(parentOf(element), CONTROLS)) continue;
         if (!shown(element) || element.closest("[aria-hidden='true'], [inert]")) continue;
         const rect = element.getBoundingClientRect();
         const hiddenToggle = element instanceof HTMLInputElement && !!element.labels?.length;
