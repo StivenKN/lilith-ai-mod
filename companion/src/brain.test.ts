@@ -108,7 +108,7 @@ describe("Brain", () => {
     await brain.chat("uno", "dashboard");
     await brain.chat("dos", "dashboard");
     expect(memory.history.filter((turn) => turn.role === "assistant")).toHaveLength(2);
-    expect(memory.promptTurns(contextBudget(false)).filter((turn) => turn.role === "assistant")).toHaveLength(1);
+    expect(memory.promptTurns(contextBudget(false), "local").filter((turn) => turn.role === "assistant")).toHaveLength(1);
   });
 
   test("runs the web search the model asks for and answers with the results", async () => {
@@ -145,10 +145,11 @@ describe("Brain", () => {
 
 describe("Connected accounts", () => {
   type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }> };
-  /** Laura's mail, offered on player turns; the gate itself is tested in lookup/gate.test.ts. */
+  /** Laura's mail from an account kept local, offered on player turns; the gate itself is tested in lookup/gate.test.ts. */
   const laura: Source = {
     facet: "mail",
     label: "alex@gmail.com",
+    audience: "local",
     search: async (query) => (query.words.includes("laura") ? [{ title: "Fotos del viaje", meta: "Laura Pérez, 2026-10-08 10:00", excerpt: "te mando las fotos del viaje", at: 1, read: async () => "Hola Alex, te mando las fotos del viaje a Cartagena." }] : []),
   };
   const accounts: BrainOptions["accounts"] = { sources: (gate) => (gate.origin === "player" ? [laura] : []) };
@@ -189,7 +190,8 @@ describe("Connected accounts", () => {
     // The answer comes from a request without tools, so it must not end by telling her to call one.
     expect(second!.messages.at(-1)!.content).not.toContain("llama ya a una herramienta");
     expect(sent).toContainEqual({ type: "chatStatus", kind: "thinking", text: "Mirando tu correo…" });
-    expect(memory.history.map((turn) => [turn.role, turn.consulted])).toEqual([["user", true], ["assistant", true]]);
+    // Stored with the widest audience the account allows, so a later online AI never sees this exchange.
+    expect(memory.history.map((turn) => [turn.role, turn.consulted])).toEqual([["user", "local"], ["assistant", "local"]]);
   });
 
   test("a model without tools gets no private facet after one rejected offer, and the prompt is the one a player without accounts gets", async () => {

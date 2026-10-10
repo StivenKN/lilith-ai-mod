@@ -46,8 +46,8 @@ import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/oll
 import { getPreset } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { paginate, parseReply, repeatedSentences, withoutSentences } from "./reply.ts";
-import { facets, isPrivate, type Facet } from "./lookup/facets.ts";
-import { audienceOf, originOf, type Gate } from "./lookup/gate.ts";
+import { facets, type Facet } from "./lookup/facets.ts";
+import { audienceOf, originOf, type Audience, type Gate } from "./lookup/gate.ts";
 import { openShelf, stripLookupTags, type Found, type LookupRequest, type Shelf } from "./lookup/shelf.ts";
 import type { SpokenLanguage } from "./voice/catalog.ts";
 import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
@@ -417,9 +417,10 @@ export class Brain {
       const onLookup = (request: LookupRequest) => {
         if (!speakFirst) this.options.send({ type: "chatStatus", kind: "thinking", text: this.#lookupStatus(request, tr) });
       };
+      const gate: Gate = { origin: originOf[input.source], audience: audienceOf(settings) };
       const budget = contextBudget(isLocalProvider(settings));
-      const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget), { role: "user", content: userTurn }];
-      const shelf = this.#openShelf({ origin: originOf[input.source], audience: audienceOf(settings) });
+      const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget, gate.audience), { role: "user", content: userTurn }];
+      const shelf = this.#openShelf(gate);
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
       const { text, emotion, model, consulted } = useComputer
@@ -484,7 +485,7 @@ export class Brain {
   ) {
     const config = this.options.config.current;
     const tr = translator(this.uiLocale());
-    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: false });
+    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: null });
     if (this.#stopped) return stopped();
     if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelf, { onLookup });
     const controller = new AbortController();
@@ -551,9 +552,11 @@ export class Brain {
       }
       let text = result.outcome === "stopped" ? tr("computer.stopped") : result.text;
       const asked = answered() ? shelf.requestIn(result) : null;
+      let consulted: Audience | null = null;
       if (asked) {
         onLookup(asked);
         const found = await shelf.look(asked, turns.at(-1)?.content ?? "", controller.signal);
+        if (found.kind === "consulted") consulted = found.audience;
         // This final answer has no tools, so what was found cannot drive desktop actions.
         const answer = await provider.chat({
           system: buildSystemPrompt(context),
@@ -564,7 +567,7 @@ export class Brain {
       }
       const reply = parseReply(stripLookupTags(text), config.advanced.maxReplyChars);
       this.#warm.add(warmKey(settings));
-      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model, consulted: asked !== null && isPrivate(asked.facet) };
+      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model, consulted };
     } catch (error) {
       if (controller.signal.aborted) return stopped();
       if (config === this.options.config.current && error instanceof ProviderError && error.kind === "no_tools") {
@@ -638,9 +641,11 @@ export class Brain {
       result = await provider.chat(request);
       lookup = open.requestIn(result);
     }
+    let consulted: Audience | null = null;
     if (lookup) {
       onLookup(lookup);
       const found = await open.look(lookup, turns.at(-1)?.content ?? "", signal);
+      if (found.kind === "consulted") consulted = found.audience;
       request = requestFor(context, found);
       result = await provider.chat(request);
     }
@@ -663,7 +668,7 @@ export class Brain {
       reply = { ...reply, text: kept.text };
     }
     this.#warm.add(warmKey(settings));
-    return { text: reply.text, emotion: reply.emotion, model, consulted: lookup !== null && isPrivate(lookup.facet) };
+    return { text: reply.text, emotion: reply.emotion, model, consulted };
   }
 
   /**

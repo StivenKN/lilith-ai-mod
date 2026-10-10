@@ -19,7 +19,7 @@ import { readTextFile, writeAtomic } from "../config.ts";
 import { errorMessage, type Log } from "../log.ts";
 import { isFacet, isPrivate, type PrivateFacet } from "../lookup/facets.ts";
 import { mayConsult, type Gate, type Policy } from "../lookup/gate.ts";
-import { LookupError, type Source } from "../lookup/sources.ts";
+import { LookupError, type Reader, type Source } from "../lookup/sources.ts";
 import { AccountId, accountId, type Connected, type Connector } from "./account.ts";
 import { catalogEntry, connectors, isConnectorId, type CatalogEntry } from "./registry.ts";
 
@@ -74,7 +74,7 @@ export interface AccountView {
 interface Bound {
   /** The credential file as read, to tell a failure on it from one on a newer credential. */
   readonly secret: string;
-  readonly sources: readonly Source[];
+  readonly readers: readonly Reader[];
   revoke(signal: AbortSignal): Promise<void>;
 }
 
@@ -92,7 +92,7 @@ function bind<S, T>(connector: Connector<S, T>, file: AccountFile, secretText: s
     secrets: connector.secretsOf(secret.data),
     bound: {
       secret: secretText,
-      sources: connector.open({ id: file.id, label: file.label, facets, settings: settings.data, secret: secret.data }),
+      readers: connector.open({ id: file.id, label: file.label, facets, settings: settings.data, secret: secret.data }),
       revoke: (signal) => connector.revoke(secret.data, signal),
     },
   };
@@ -124,15 +124,16 @@ export class AccountStore {
   /** Sources this turn may use: the gate applied per account and facet, now and again at every call. */
   sources(gate: Gate): Source[] {
     return [...this.#accounts.values()].flatMap((account) =>
-      (account.bound?.sources ?? [])
-        .filter((source) => mayConsult(source.facet, account.view.policy, gate))
-        .map((source) => this.#guarded(account.view.id, source.facet, source.label, gate)),
+      (account.bound?.readers ?? [])
+        .filter((reader) => mayConsult(reader.facet, account.view.policy, gate))
+        .map((reader) => this.#guarded(account, reader, gate)),
     );
   }
 
   /** Every source of one account, policy aside: the dashboard's Try it shows the player what Lilith would see. */
   sourcesOf(id: AccountId): Source[] {
-    return (this.#accounts.get(id)?.bound?.sources ?? []).map((source) => this.#guarded(id, source.facet, source.label, null));
+    const account = this.#accounts.get(id);
+    return account ? (account.bound?.readers ?? []).map((reader) => this.#guarded(account, reader, null)) : [];
   }
 
   /**
@@ -140,13 +141,15 @@ export class AccountStore {
    * policy of that moment, reports a known-bad one without calling it, and records one that just
    * turned bad.
    */
-  #guarded(id: AccountId, facet: PrivateFacet, label: string, gate: Gate | null): Source {
-    const live = (): { source: Source; secret: string } => {
-      const account = this.#accounts.get(id);
-      const source = account?.bound?.sources.find((candidate) => candidate.facet === facet);
-      if (!account?.bound || !source || (gate && !mayConsult(facet, account.view.policy, gate))) throw new LookupError("unreadable", `account ${id} is no longer open to this turn`);
-      if (account.view.status === "reconnect") throw new LookupError("reconnect", `${label} needs to be connected again`);
-      return { source, secret: account.bound.secret };
+  #guarded(account: Account, reader: Reader, gate: Gate | null): Source {
+    const { id, label, policy } = account.view;
+    const { facet } = reader;
+    const live = (): { source: Reader; secret: string } => {
+      const current = this.#accounts.get(id);
+      const source = current?.bound?.readers.find((candidate) => candidate.facet === facet);
+      if (!current?.bound || !source || (gate && !mayConsult(facet, current.view.policy, gate))) throw new LookupError("unreadable", `account ${id} is no longer open to this turn`);
+      if (current.view.status === "reconnect") throw new LookupError("reconnect", `${label} needs to be connected again`);
+      return { source, secret: current.bound.secret };
     };
     const recording = async <T>(secret: string, run: () => Promise<T>): Promise<T> => {
       try {
@@ -159,6 +162,7 @@ export class AccountStore {
     return {
       facet,
       label,
+      audience: policy.shareOnline ? "online" : "local",
       search: async (query, signal) => {
         const { source, secret } = live();
         const hits = await recording(secret, () => source.search(query, signal));

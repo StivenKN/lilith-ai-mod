@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startMockGoogle, type MockGoogle } from "../../../scripts/mock-google.ts";
 import { parseQuery } from "../../lookup/query.ts";
-import { LookupError, type Source } from "../../lookup/sources.ts";
+import { LookupError, type Reader } from "../../lookup/sources.ts";
 import { accountId } from "../account.ts";
 import { google, GOOGLE_SCOPE_OF } from "./google.ts";
 
@@ -41,7 +41,7 @@ async function signIn() {
 
 const open = (connected: Awaited<ReturnType<typeof signIn>>, n: number) =>
   google.open({ id: accountId("google", `${connected.label}-${n}`), label: connected.label, facets: connected.facets, settings: connected.settings, secret: connected.secret });
-const source = (sources: Source[], facet: Source["facet"]) => sources.find((candidate) => candidate.facet === facet)!;
+const source = (sources: Reader[], facet: Reader["facet"]) => sources.find((candidate) => candidate.facet === facet)!;
 
 describe("Google connector", () => {
   test("signs in with PKCE, learns the address, and reads mail, files and calendar", async () => {
@@ -105,7 +105,7 @@ describe("Google connector", () => {
 
   test("a rate limit, a credential Google rejects after a refresh, or a build without a client pass; only a dead refresh token asks for a reconnect", async () => {
     const sources = open(await signIn(), 6);
-    const problem = (facet: Source["facet"]) => source(sources, facet).search(parseQuery("laura"), never).then(() => "none", (error: unknown) => (error instanceof LookupError ? error.problem : "thrown"));
+    const problem = (facet: Reader["facet"]) => source(sources, facet).search(parseQuery("laura"), never).then(() => "none", (error: unknown) => (error instanceof LookupError ? error.problem : "thrown"));
     try {
       mock.deny(403);
       expect(await problem("mail")).toBe("unreadable");

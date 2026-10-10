@@ -14,6 +14,7 @@ const none: Source[] = [];
 const mailbox = (label: string, hits: Hit[] | Error): Source => ({
   facet: "mail",
   label,
+  audience: "local",
   search: async () => { if (hits instanceof Error) throw hits; return hits; },
 });
 const hit = (title: string, at: number, extra: Partial<Hit> = {}): Hit => ({ title, meta: `Someone, ${at}`, excerpt: `about ${title}`, at, ...extra });
@@ -99,7 +100,7 @@ describe("openShelf", () => {
     const shelf = openShelf({ gate: player, tools: true, search: off, sources: [mailbox("alex@gmail.com", [hit("Fotos del viaje", 2)])], log });
     const request = shelf.requestIn({ text: "", calls: [call("email", { query: "laura" })] })!;
     expect(await shelf.look(request, "¿qué me escribió Laura?")).toEqual({
-      kind: "consulted", query: "laura",
+      kind: "consulted", query: "laura", audience: "local",
       sections: [{ facet: "mail", findings: [{ title: "Fotos del viaje", meta: "Someone, 2", excerpt: "about Fotos del viaje" }], expanded: null, problems: [] }],
     });
   });
@@ -123,7 +124,7 @@ describe("consult", () => {
     const day = 86400_000;
     const now = Date.now();
     const event = (days: number): Hit => ({ title: `Standup ${days > 0 ? "+" : ""}${days}d`, meta: "", excerpt: "", at: now + days * day });
-    const calendar: Source = { facet: "calendar", label: "alex@gmail.com", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
+    const calendar: Source = { facet: "calendar", label: "alex@gmail.com", audience: "local", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
     const section = await consult({ ...options, facet: "calendar", sources: [calendar] });
     expect(section.findings.map((finding) => finding.title)).toEqual(["Standup +1d", "Standup +3d", "Standup -1d", "Standup -2d", "Standup -4d"]);
   });
@@ -163,7 +164,7 @@ describe("consult", () => {
 
   test("an invented operator query that finds nothing is retried once with the player's own words", async () => {
     const asked: string[] = [];
-    const source: Source = { facet: "mail", label: "alex@gmail.com", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
+    const source: Source = { facet: "mail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
     const section = await consult({ ...options, sources: [source], query: "from:work@example.com", said: "¿me respondió el casero?" });
     expect(asked).toEqual(["", "¿me respondió el casero?"]);
     expect(section.findings).toHaveLength(1);

@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import type { PrivateFacet } from "../lookup/facets.ts";
-import type { Source } from "../lookup/sources.ts";
+import type { Reader } from "../lookup/sources.ts";
 
 /** "google-3f9a2c1b0d4e": the catalog entry plus a hash of the user, so the same account twice converges to one. */
 export const AccountId = z.string().regex(/^[a-z0-9][a-z0-9-]*$/).brand<"AccountId">();
@@ -41,6 +41,6 @@ export interface Connector<Settings, Secret> {
   finish(grant: { code: string; redirectUri: string; codeVerifier: string }, signal: AbortSignal): Promise<Connected<Settings, Secret>>;
   /** Best effort: a failure never blocks a disconnect. */
   revoke(secret: Secret, signal: AbortSignal): Promise<void>;
-  /** One read-only source per facet of the account. Parses its wire format into findings at the boundary. */
-  open(account: OpenAccount<Settings, Secret>): Source[];
+  /** One read-only reader per facet of the account. Parses its wire format into findings at the boundary. */
+  open(account: OpenAccount<Settings, Secret>): Reader[];
 }

@@ -33,7 +33,8 @@ export interface Section {
 export type Found =
   | { kind: "results"; query: string; results: readonly SearchResult[] }
   | { kind: "failed"; query: string }
-  | { kind: "consulted"; query: string; sections: readonly Section[] };
+  /** `audience`: the widest one every account asked allows, so the exchange is replayed only there. */
+  | { kind: "consulted"; query: string; sections: readonly Section[]; audience: Audience };
 
 export interface Shelf {
   /** Settings, accounts and origin only, never content, so the system prompt stays the same across the turn. */
@@ -131,8 +132,9 @@ export function openShelf(options: {
         }
       }
       if (!privates.includes(request.facet)) return { kind: "failed", query: request.query };
-      const section = await consult({ sources: sources.filter((source) => source.facet === request.facet), facet: request.facet, query: request.query, said, budget: LOOKUP_BUDGET[gate.audience], log, ...(signal ? { signal } : {}) });
-      return { kind: "consulted", query: request.query, sections: [section] };
+      const asked = sources.filter((source) => source.facet === request.facet);
+      const section = await consult({ sources: asked, facet: request.facet, query: request.query, said, budget: LOOKUP_BUDGET[gate.audience], log, ...(signal ? { signal } : {}) });
+      return { kind: "consulted", query: request.query, sections: [section], audience: asked.every((source) => source.audience === "online") ? "online" : "local" };
     },
     withoutTools: () => openShelf({ ...options, tools: false }),
   };

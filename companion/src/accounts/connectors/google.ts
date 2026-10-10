@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { privateFacets, type PrivateFacet } from "../../lookup/facets.ts";
 import type { Query } from "../../lookup/query.ts";
-import { LookupError, type Hit, type Source } from "../../lookup/sources.ts";
+import { LookupError, type Hit, type Reader } from "../../lookup/sources.ts";
 import type { AccountId, Connector, OpenAccount } from "../account.ts";
 
 const TIMEOUT_MS = 10_000;
@@ -217,7 +217,7 @@ function partText(part: GmailPart | undefined, mimeType: string): string | null 
 /** "Laura Pérez <laura@example.com>" shows as Laura Pérez; a bare address stays an address. */
 const senderName = (from: string): string => /^\s*"?([^"<]+?)"?\s*</.exec(from)?.[1] ?? from.trim();
 
-function mailSource(account: Account): Source {
+function mailSource(account: Account): Reader {
   const base = `${endpoints().gmail}/users/me/messages`;
   return {
     facet: "mail",
@@ -269,7 +269,7 @@ const driveKind = (mimeType: string): string =>
 /** Drive's query language quotes with single quotes and escapes with backslashes. */
 const driveEscape = (text: string) => text.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-function filesSource(account: Account): Source {
+function filesSource(account: Account): Reader {
   const base = `${endpoints().drive}/files`;
   return {
     facet: "files",
@@ -313,7 +313,7 @@ function eventStart(time: z.infer<typeof CalendarTime> | undefined): { at: numbe
   return { at: 0, text: "" };
 }
 
-function calendarSource(account: Account): Source {
+function calendarSource(account: Account): Reader {
   return {
     facet: "calendar",
     label: account.label,
@@ -330,7 +330,7 @@ function calendarSource(account: Account): Source {
   };
 }
 
-const sourceFor = { mail: mailSource, files: filesSource, calendar: calendarSource } as const satisfies Record<PrivateFacet, (account: Account) => Source>;
+const sourceFor = { mail: mailSource, files: filesSource, calendar: calendarSource } as const satisfies Record<PrivateFacet, (account: Account) => Reader>;
 
 export const google: Connector<Settings, Secret> = {
   facets: privateFacets,
