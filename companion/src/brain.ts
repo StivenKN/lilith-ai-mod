@@ -25,6 +25,7 @@ import { errorMessage } from "./log.ts";
 import type { Card, Keepsake, Keepsakes, Picture } from "./keepsakes.ts";
 import { contextBudget, noteChangesFormat, parseNoteChanges, parseSummaryLines, type Memory, type StoredTurn, type UpkeepJob } from "./memory.ts";
 import {
+  avoidRepeatComputerCue,
   avoidRepeatCue,
   buildCardPrompt,
   buildSystemPrompt,
@@ -499,8 +500,8 @@ export class Brain {
       const browser = link ? new BrowserSession(link, { vision: capabilities.vision }) : undefined;
       const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, browser: !!browser } };
       let lastStatus = "";
-      const result = await runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(turns, context), vision: capabilities.vision, browser: !!browser, maxTokens: RETRY_MAX_TOKENS, temperature: config.advanced.temperature }),
+      const run = (asked: readonly ChatTurn[], temperature: number) => runComputerTurn({
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), vision: capabilities.vision, browser: !!browser, maxTokens: RETRY_MAX_TOKENS, temperature }),
         desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
         ...(browser ? { browser } : {}),
         canAct: () => epoch === this.#computerEpoch,
@@ -517,12 +518,22 @@ export class Brain {
           if (this.#connected) this.#say(text, "neutral", 120);
         },
       });
+      let result = await run(turns, config.advanced.temperature);
       if (!acted && result.outcome === "superseded") return await fallback();
+      if (!acted && result.outcome === "done") {
+        const initialReply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
+        if ((searcher && findSearchRequest(result.text)) || !initialReply.text) return await fallback();
+        // A plain answer that mostly repeats her is often a repeated PC request answered in words
+        // ("I opened it"), so the retry keeps the tools; tool-less chat could never act on it.
+        if (repeats(initialReply.text, this.options.memory.recentReplies()).mostly) {
+          this.#log.info("computer reply mostly repeated her earlier words; asking once more with tools");
+          const cued = turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: turn.content + avoidRepeatComputerCue(language) } : turn));
+          result = await run(cued, Math.min(2, config.advanced.temperature + 0.2));
+          if (!acted && result.outcome === "superseded") return await fallback();
+        }
+      }
       let text = result.outcome === "stopped" ? tr("computer.stopped") : result.text;
       const query = result.outcome === "done" && searcher ? findSearchRequest(text) : null;
-      const initialReply = parseReply(stripSearchTags(text), config.advanced.maxReplyChars);
-      // A plain chat answer that mostly repeats her goes through ordinary chat, which asks again.
-      if (!acted && result.outcome === "done" && (query || !initialReply.text || repeats(initialReply.text, this.options.memory.recentReplies()).mostly)) return await fallback();
       if (query && searcher) {
         onSearch(query);
         let search: NonNullable<PromptContext["search"]>;

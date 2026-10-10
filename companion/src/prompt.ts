@@ -276,6 +276,12 @@ export const avoidRepeatCue = (language: Language): string =>
     : "\n\nImportant: your previous reply repeated things you had already said. Answer what they said last with something new, in different words, without repeating your questions.";
 
 /** The repeat cue for a computer turn: a repeated PC request is still a request to act. */
+export const avoidRepeatComputerCue = (language: Language): string =>
+  avoidRepeatCue(language) +
+  (language === "es"
+    ? " Si te pidió algo en el PC, hazlo ahora con una herramienta, aunque ya lo hayas hecho antes."
+    : " If they asked for something on the PC, do it now with a tool, even if you did it before.");
+
 // ── Memory upkeep ──────────────────────────────────────────────────────────────
 
 /** Turns as a dated transcript for the memory prompts, with the host's and her lines labelled. */
