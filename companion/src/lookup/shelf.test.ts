@@ -169,15 +169,21 @@ describe("consult", () => {
     expect(logged.some((message) => message.includes("google-alexoldcom"))).toBe(true);
   });
 
-  test("an invented operator query that finds nothing is retried once with the player's own words", async () => {
+  test("an operator value the player never said is retried once with their content words, any of them; one they did say is not invented", async () => {
     const asked: string[] = [];
     const source: Source = { id: "google-1", facet: "mail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
     const section = await consult({ ...options, sources: [source], query: "from:work@example.com", said: "¿me respondió el casero?" });
-    expect(asked).toEqual(["", "¿me respondió el casero?"]);
+    // Gmail ANDs words, so the retry ORs them, and "me" and "el" would match every mail.
+    expect(asked).toEqual(["", "respondio OR casero"]);
     expect(section.findings).toHaveLength(1);
-    // The player's own words that find nothing are not tried twice.
+    // The tool description recommends from:name; a name the player said is their query, not an invented one.
     asked.length = 0;
+    await consult({ ...options, sources: [source], query: "from:laura", said: "¿qué me escribió Laura ayer?" });
+    expect(asked).toEqual([""]);
+    // A time is not an operator either, and the player's own words that find nothing are not tried twice.
+    asked.length = 0;
+    await consult({ ...options, sources: [source], query: "reunión 10:30", said: "¿a qué hora es la reunión de las 10:30?" });
     await consult({ ...options, sources: [source], query: "fotos", said: "¿tengo fotos nuevas?" });
-    expect(asked).toEqual(["fotos"]);
+    expect(asked).toEqual(["reunión 10:30", "fotos"]);
   });
 });

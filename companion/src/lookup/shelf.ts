@@ -140,22 +140,36 @@ export function openShelf(options: {
   };
 }
 
-/** Operators and copied examples: a query the model made up rather than took from the player. */
-const INVENTED = /\b\w+:\S|\b(?:the words to (?:look|search) for|consulta breve|short query|from:name)\b/i;
+/** Examples copied from the tool description instead of a query. */
+const PLACEHOLDER = /\b(?:the words to (?:look|search) for|consulta breve|short query|from:name)\b/i;
+/** Words of the player's message that would match everything in an OR query: articles, pronouns, prepositions and the like, in both languages. */
+const STOP_WORDS = new Set([
+  "a", "al", "algo", "ante", "como", "con", "cual", "cuando", "de", "del", "desde", "donde", "el", "ella", "ellos", "en", "entre", "es", "esa", "ese", "esta", "este", "esto", "fue", "ha", "hay", "la", "las", "le", "les", "lo", "los", "me", "mi", "mis", "muy", "nada", "ni", "no", "nos", "o", "para", "pero", "por", "que", "se", "si", "sin", "sobre", "su", "sus", "te", "ti", "tu", "tus", "un", "una", "unas", "unos", "y", "ya", "yo",
+  "about", "an", "and", "any", "are", "as", "at", "be", "been", "by", "can", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "him", "his", "how", "i", "if", "in", "is", "it", "its", "my", "not", "of", "on", "or", "our", "she", "so", "that", "the", "their", "them", "there", "they", "this", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "will", "with", "would", "yet", "you", "your",
+]);
+
+/** A query the model made up rather than took from the player: a copied placeholder, or an operator whose value they never said (`from:work@example.com` for "did the landlord reply?"). `from:laura` for "what did Laura write?" is theirs. */
+function invented(query: string, said: string): boolean {
+  if (PLACEHOLDER.test(query)) return true;
+  const theirs = new Set(foldWords(said));
+  return [...query.matchAll(/\b\w+:(\S+)/g)].some(([, value = ""]) => !foldWords(value).every((word) => theirs.has(word)));
+}
 
 /**
  * Looks in every source of one facet, in parallel and under the turn's signal with 10 s each,
  * merges the findings, reads the top one in full within the budget, and names the accounts that
  * failed. Never throws, and never logs the query or what was found. An invented query that finds
- * nothing is tried once more with the player's own words.
+ * nothing is tried once more with the player's own content words, any of them: Gmail ANDs words,
+ * so their whole sentence would find nothing either.
  */
 export async function consult(options: { sources: readonly Source[]; facet: PrivateFacet; query: string; said?: string; budget: number; signal?: AbortSignal; log: Log }): Promise<Section> {
   const started = performance.now();
   let section = await gather(options);
   const { said } = options;
-  if (section.findings.length === 0 && section.problems.length === 0 && said && INVENTED.test(options.query) && foldWords(said).join(" ") !== foldWords(options.query).join(" ")) {
+  const own = said && section.findings.length === 0 && section.problems.length === 0 && invented(options.query, said) ? foldWords(said).filter((word) => !STOP_WORDS.has(word)) : [];
+  if (own.length > 0) {
     options.log.info(`${options.facet} lookup found nothing for an invented query; trying the player's words`);
-    section = await gather({ ...options, query: said });
+    section = await gather({ ...options, query: own.join(" OR ") });
   }
   options.log.info(`${options.facet} lookup: ${section.findings.length} finding(s) from ${options.sources.length} account(s) in ${Math.round(performance.now() - started)} ms${section.expanded ? ", top read in full" : ""}${section.problems.length ? `, ${section.problems.length} failed` : ""}`);
   return section;
