@@ -82,7 +82,7 @@ async function accessToken(account: Account, signal: AbortSignal): Promise<strin
   const cached = tokens.get(account.id);
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
   const client = googleClient();
-  if (!client) throw new LookupError("reconnect", "This build has no Google client");
+  if (!client) throw new LookupError("unreachable", "This build has no Google client");
   const json = await postForm(endpoints().token, { grant_type: "refresh_token", refresh_token: account.secret.refreshToken, client_id: client.id, client_secret: client.secret }, signal);
   const parsed = TokenResponse.safeParse(json);
   if (!parsed.success) throw new LookupError("unreachable", "Unexpected token response from Google");
@@ -90,7 +90,11 @@ async function accessToken(account: Account, signal: AbortSignal): Promise<strin
   return parsed.data.access_token;
 }
 
-/** One authenticated GET. A 401 refreshes the token once; a second one, or a 403, means the account must be connected again. */
+/**
+ * One authenticated GET. A 401 refreshes the token once. A second one, or a 403, passes: Google
+ * answers 403 for rate limits, a disabled API, a missing scope and export limits, so only a dead
+ * refresh token (`invalid_grant`, from the refresh itself) means the account must be connected again.
+ */
 async function call(account: Account, url: string, signal: AbortSignal, retry = true): Promise<Response> {
   const token = await accessToken(account, signal);
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
@@ -105,7 +109,6 @@ async function call(account: Account, url: string, signal: AbortSignal, retry = 
     tokens.delete(account.id);
     return call(account, url, signal, false);
   }
-  if (response.status === 401 || response.status === 403) throw new LookupError("reconnect", `Google answered HTTP ${response.status}`);
   if (!response.ok) throw new LookupError(response.status >= 500 ? "unreachable" : "unreadable", `Google answered HTTP ${response.status}`);
   return response;
 }
@@ -296,8 +299,9 @@ export const google: Connector<Settings, Secret> = {
       code_challenge_method: "S256",
       state,
       access_type: "offline",
+      // Every sign-in asks for every scope afresh. Incremental grants would bring back a scope the
+      // player unticked this time from an earlier grant that still stands.
       prompt: "consent",
-      include_granted_scopes: "true",
     }).toString();
     return url.href;
   },

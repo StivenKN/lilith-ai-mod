@@ -41,6 +41,8 @@ const Listing = z.looseObject({
 });
 /** What this version reads in full and writes. A file that lists but does not parse as this (a status it does not know) needs a newer version. */
 const AccountFile = Listing.extend({
+  /** What the sign-in granted: the most the player can tick `facets` up to without connecting again. */
+  granted: z.array(z.string()),
   status: z.enum(["ok", "reconnect"]),
 });
 type AccountFile = z.infer<typeof AccountFile>;
@@ -59,6 +61,8 @@ export interface AccountView {
   entry: string;
   label: string;
   facets: readonly PrivateFacet[];
+  /** What the sign-in granted: `facets` can be narrowed and widened within it. */
+  granted: readonly PrivateFacet[];
   policy: Policy;
   power: CatalogEntry["power"];
   /** `needs-newer-version`: this version cannot open it and leaves its files alone. */
@@ -144,17 +148,24 @@ export class AccountStore {
       if (account.view.status === "reconnect") throw new LookupError("reconnect", `${label} needs to be connected again`);
       return { source, secret: account.bound.secret };
     };
+    const recording = async <T>(secret: string, run: () => Promise<T>): Promise<T> => {
+      try {
+        return await run();
+      } catch (error) {
+        if (error instanceof LookupError && error.problem === "reconnect") await this.#markReconnect(id, secret);
+        throw error;
+      }
+    };
     return {
       facet,
       label,
       search: async (query, signal) => {
         const { source, secret } = live();
-        try {
-          return await source.search(query, signal);
-        } catch (error) {
-          if (error instanceof LookupError && error.problem === "reconnect") await this.#markReconnect(id, secret);
-          throw error;
-        }
+        const hits = await recording(secret, () => source.search(query, signal));
+        return hits.map((hit) => {
+          const { read } = hit;
+          return read ? { ...hit, read: (signal: AbortSignal) => recording(secret, () => read(signal)) } : hit;
+        });
       },
     };
   }
@@ -167,11 +178,18 @@ export class AccountStore {
     await this.#write(id, { ...account.file, status: "reconnect" });
   }
 
-  /** Writes both files. The same account twice (same entry and user) lands on the same id, so it converges to one. */
+  /**
+   * Writes both files. The same account twice (same entry and user) lands on the same id, so it
+   * converges to one: a reconnect keeps the policy and the facets the player chose, within what
+   * Google granted this time.
+   */
   async add<S extends Record<string, unknown>, T>(entry: CatalogEntry, connected: Connected<S, T>, shareOnline: boolean): Promise<AccountView> {
     const id = accountId(entry.id, connected.label);
-    const facets = connected.facets.filter((facet) => entry.facets.includes(facet));
-    const file: AccountFile = { ...connected.settings, version: FILE_VERSION, id, connector: entry.connector, entry: entry.id, label: connected.label, facets, policy: { enabled: true, shareOnline }, status: "ok", addedAt: new Date().toISOString() };
+    const existing = this.#accounts.get(id)?.view;
+    const granted = connected.facets.filter((facet) => entry.facets.includes(facet));
+    const facets = existing ? existing.facets.filter((facet) => granted.includes(facet)) : granted;
+    const policy = existing ? { ...existing.policy } : { enabled: true, shareOnline };
+    const file: AccountFile = { ...connected.settings, version: FILE_VERSION, id, connector: entry.connector, entry: entry.id, label: connected.label, facets, granted, policy, status: "ok", addedAt: existing?.addedAt || new Date().toISOString() };
     await writeAtomic(this.#secretPath(id), `${JSON.stringify(connected.secret, null, 2)}\n`);
     await this.#write(id, file);
     this.log.info(`account ${id} connected (${entry.id}: ${facets.join(", ")})`);
@@ -182,9 +200,8 @@ export class AccountStore {
   async update(id: AccountId, patch: { facets?: readonly PrivateFacet[] | undefined; policy?: { [K in keyof Policy]?: Policy[K] | undefined } | undefined }): Promise<AccountView> {
     const account = this.#accounts.get(id);
     if (!account) throw new Error(`No account ${id}`);
-    if (!account.file || !isConnectorId(account.file.connector)) throw new Error(`Account ${id} needs a newer version of Lilith AI`);
-    const allowed = connectors[account.file.connector].facets;
-    const facets = patch.facets ? patch.facets.filter((facet) => allowed.includes(facet)) : account.file.facets;
+    if (!account.file) throw new Error(`Account ${id} needs a newer version of Lilith AI`);
+    const facets = patch.facets ? patch.facets.filter((facet) => account.view.granted.includes(facet)) : account.file.facets;
     const policy = { enabled: patch.policy?.enabled ?? account.file.policy.enabled, shareOnline: patch.policy?.shareOnline ?? account.file.policy.shareOnline };
     await this.#write(id, { ...account.file, facets: [...facets], policy });
     return this.#view(id);
@@ -280,14 +297,15 @@ export class AccountStore {
     const base = { id, entry: listed.entry, label: listed.label, policy: { enabled: listed.policy.enabled, shareOnline: listed.policy.shareOnline }, power: entry?.power ?? "read", addedAt: listed.addedAt };
     const file = AccountFile.safeParse(json);
     if (!file.success || listed.version > FILE_VERSION || !isConnectorId(listed.connector) || !entry) {
-      this.#accounts.set(id, { file: null, view: { ...base, facets, status: "needs-newer-version" }, bound: null });
+      this.#accounts.set(id, { file: null, view: { ...base, facets, granted: facets, status: "needs-newer-version" }, bound: null });
       return;
     }
     const connector = connectors[listed.connector];
+    const granted = file.data.granted.filter(isFacet).filter(isPrivate).filter((facet) => connector.facets.includes(facet));
     const secretText = await readTextFile(this.#secretPath(id));
-    const opened = secretText === null ? null : bind(connector, file.data, secretText, facets.filter((facet) => connector.facets.includes(facet)));
+    const opened = secretText === null ? null : bind(connector, file.data, secretText, facets.filter((facet) => granted.includes(facet)));
     for (const secret of opened?.secrets ?? []) this.hide(secret);
-    this.#accounts.set(id, { file: file.data, view: { ...base, facets, status: opened ? file.data.status : "reconnect" }, bound: opened?.bound ?? null });
+    this.#accounts.set(id, { file: file.data, view: { ...base, facets, granted, status: opened ? file.data.status : "reconnect" }, bound: opened?.bound ?? null });
   }
 
   #emit(): void {

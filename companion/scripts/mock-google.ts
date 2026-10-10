@@ -55,6 +55,8 @@ export interface MockGoogle {
   expireTokens(): void;
   /** Every refresh token stops working, as after the player removes the app from their Google account. */
   revokeRefreshTokens(): void;
+  /** Every API call answers this status (a rate limit, a disabled API) until cleared with null. */
+  deny(status: 401 | 403 | null): void;
   stop(): void;
 }
 
@@ -63,6 +65,7 @@ export function startMockGoogle(port = 0): MockGoogle {
   const accessTokens = new Map<string, number>();
   const refreshTokens = new Set<string>();
   let grant: string[] | null = null;
+  let denied: 401 | 403 | null = null;
   let issued = 0;
   const mock = { refreshes: 0 };
 
@@ -126,6 +129,7 @@ export function startMockGoogle(port = 0): MockGoogle {
       }
 
       if (!bearer(request)) return unauthorized();
+      if (denied) return Response.json({ error: { code: denied, message: denied === 403 ? "Rate Limit Exceeded" : "Invalid Credentials" } }, { status: denied });
 
       if (path === "/userinfo") return Response.json({ sub: "1", email: "alex@gmail.com", email_verified: true });
 
@@ -186,6 +190,7 @@ export function startMockGoogle(port = 0): MockGoogle {
     grantOnly: (scopes) => { grant = scopes; },
     expireTokens: () => accessTokens.clear(),
     revokeRefreshTokens: () => refreshTokens.clear(),
+    deny: (status) => { denied = status; },
     stop: () => void server.stop(true),
   };
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockGoogle, type MockGoogle } from "../../scripts/mock-google.ts";
 import { Logger } from "../log.ts";
+import type { PrivateFacet } from "../lookup/facets.ts";
 import { parseQuery } from "../lookup/query.ts";
 import { accountId } from "./account.ts";
 import { catalog } from "./registry.ts";
@@ -37,11 +38,11 @@ async function load(name: string) {
   return store;
 }
 /** What a finished Google sign-in hands the store, with a refresh token the mock knows. */
-async function connected(user = "alex@gmail.com") {
+async function connected(user = "alex@gmail.com", facets: readonly PrivateFacet[] = ["mail"]) {
   const page = await (await fetch(`${mock.url}/auth?${new URLSearchParams({ response_type: "code", client_id: "mock-client", redirect_uri: "http://127.0.0.1:1/cb", scope: "openid email https://www.googleapis.com/auth/gmail.readonly", code_challenge: new Bun.CryptoHasher("sha256").update("verifier-verifier-verifier-verifier-verifier").digest("base64url"), code_challenge_method: "S256", state: "s", access_type: "offline" })}`)).text();
   const code = new URL(/id="allow" href="([^"]+)"/.exec(page)![1]!.replace(/&amp;/g, "&")).searchParams.get("code")!;
   const token = (await (await fetch(`${mock.url}/token`, { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: "verifier-verifier-verifier-verifier-verifier", client_id: "mock-client", client_secret: "x" }) })).json()) as { refresh_token: string };
-  return { settings: { user }, secret: { refreshToken: token.refresh_token }, label: user, facets: ["mail" as const] };
+  return { settings: { user }, secret: { refreshToken: token.refresh_token }, label: user, facets };
 }
 const until = async (done: () => boolean) => {
   for (let tries = 0; !done(); tries++) {
@@ -58,10 +59,43 @@ describe("AccountStore", () => {
     expect(view).toMatchObject({ id: accountId("google", "alex@gmail.com"), entry: "google", label: "alex@gmail.com", facets: ["mail"], policy: { enabled: true, shareOnline: false }, power: "read", status: "ok" });
     expect(JSON.stringify(store.list())).not.toContain(account.secret.refreshToken);
     expect(logger.redact(`token ${account.secret.refreshToken} leaked`)).toBe("token *** leaked");
-    // The same account connected again converges to the one entry.
+    // The same account connected again converges to the one entry and keeps what the player chose.
     await store.add(google, await connected(), true);
     expect(store.list()).toHaveLength(1);
-    expect(store.list()[0]?.policy.shareOnline).toBe(true);
+    expect(store.list()[0]?.policy.shareOnline).toBe(false);
+  });
+
+  test("the player's choices outlive a reconnect, and the facets never widen past what Google granted", async () => {
+    const store = await load("granted");
+    const all = ["mail", "files", "calendar"] as const;
+    const gate = { origin: "player", audience: "local" } as const;
+    const view = await store.add(google, await connected("alex@gmail.com", all), true);
+    await store.update(view.id, { facets: ["calendar"], policy: { enabled: false } });
+    // Reconnected with Gmail unticked on Google's page: the policy stays, the facets stay narrow, the grant shrinks.
+    await store.add(google, await connected("alex@gmail.com", ["files", "calendar"]), false);
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0]).toMatchObject({ facets: ["calendar"], granted: ["files", "calendar"], policy: { enabled: false, shareOnline: true } });
+    // Widening in the dashboard stops at the grant.
+    expect((await store.update(view.id, { facets: [...all], policy: { enabled: true } })).facets).toEqual(["files", "calendar"]);
+    expect(store.sources(gate).map((source) => source.facet)).toEqual(["files", "calendar"]);
+  });
+
+  test("a passing failure leaves the file alone; a dead credential met while reading in full is recorded like one met while searching", async () => {
+    const store = await load("transient");
+    const gate = { origin: "player", audience: "local" } as const;
+    const view = await store.add(google, await connected(), false);
+    mock.deny(403);
+    try {
+      await expect(store.sources(gate)[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "unreadable" });
+    } finally {
+      mock.deny(null);
+    }
+    expect(JSON.parse(await readFile(join(store.dir, `${view.id}.json`), "utf8"))).toMatchObject({ status: "ok" });
+    const [hit] = await store.sources(gate)[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000));
+    mock.revokeRefreshTokens();
+    mock.expireTokens();
+    await expect(hit!.read!(AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "reconnect" });
+    expect(store.list()[0]?.status).toBe("reconnect");
   });
 
   test("the gate decides which sources a turn gets; the dashboard's Try it gets them all", async () => {

@@ -90,6 +90,33 @@ describe("Google connector", () => {
     expect((failure as LookupError).problem).toBe("reconnect");
   });
 
+  test("a rate limit, a credential Google rejects after a refresh, or a build without a client pass; only a dead refresh token asks for a reconnect", async () => {
+    const sources = open(await signIn(), 6);
+    const problem = (facet: Source["facet"]) => source(sources, facet).search(parseQuery("laura"), never).then(() => "none", (error: unknown) => (error instanceof LookupError ? error.problem : "thrown"));
+    try {
+      mock.deny(403);
+      expect(await problem("mail")).toBe("unreadable");
+      mock.deny(401);
+      expect(await problem("calendar")).toBe("unreadable");
+    } finally {
+      mock.deny(null);
+    }
+    const id = process.env.LILITH_GOOGLE_CLIENT_ID;
+    delete process.env.LILITH_GOOGLE_CLIENT_ID;
+    try {
+      mock.expireTokens();
+      expect(await problem("files")).toBe("unreachable");
+    } finally {
+      process.env.LILITH_GOOGLE_CLIENT_ID = id;
+    }
+  });
+
+  test("every sign-in asks for every scope afresh, so an unticked one does not come back from an older grant", () => {
+    const consent = new URL(google.consentUrl({ redirectUri, state: "s", codeChallenge: "c" })!);
+    expect(consent.searchParams.has("include_granted_scopes")).toBe(false);
+    expect(consent.searchParams.get("prompt")).toBe("consent");
+  });
+
   test("the account gets only the facets Google actually granted", async () => {
     mock.grantOnly(["openid", "email", GOOGLE_SCOPE_OF.calendar]);
     try {
