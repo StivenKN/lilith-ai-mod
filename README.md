@@ -36,6 +36,10 @@ answers in her own speech bubble, in character, in your language, and remembers 
 - **Web search** (optional). She can look up news, weather, prices and other current facts:
   for free from your PC (DuckDuckGo, no account), or through [Firecrawl](https://www.firecrawl.dev)
   with your API key. Turn it on in **AI → Web search**.
+- **Your accounts** (optional). Sign in with Google in the dashboard's **Accounts** tab and Lilith
+  can answer from your Gmail, Drive and Calendar when you ask ("did Laura write back?", "what does
+  my budget sheet say?"). She only reads, never changes or sends anything, and you choose what she
+  may read. **Try it** shows exactly what she would find.
 - **Updates itself.** New versions install in the background and take effect the next time you
   start the game (turn it off in **Game → Installation**).
 - **Honest errors.** When something fails, she doesn't make up an excuse: the bubble says what broke
@@ -74,6 +78,14 @@ service. With web search on, only the search words she picks go to DuckDuckGo or
 your conversation.
 To check for updates, the mod asks GitHub for the list of releases every few hours; nothing about
 you is sent.
+
+With an account connected in **Accounts**, Lilith looks in it only to answer a message of yours,
+never when she speaks first or writes a card. The words she searches for go to Google, to your own
+account. What she finds goes to the AI that writes her reply and nowhere else, and it never goes
+into her notes about you, the conversation summary or her cards. An online AI reads an account, or
+what she told you about it, only if you turn on **Online AI may read this** for it. Your sign-in
+stays on your PC in `%APPDATA%\LilithAICompanion\accounts\`; **Disconnect** deletes it and asks
+Google to remove her access.
 
 Computer control is automatic for local or LAN AI, and off for online services until you enable
 it in **Lilith → Using your PC**. When asked to use your PC, Lilith can inspect the focused app and

@@ -537,6 +537,17 @@ her own, and never changes anything. Defined in `companion/src/accounts/` and `c
   verifier, and always 302s to `/#accounts?result=…` (connected, denied, failed, expired, or
   finished for a replay). Flows live in memory in the process that started them and expire after
   ten minutes.
+- **The tab** (`web/pages/accounts.tsx`). One card per account: its status, a switch per facet,
+  "Online AI may read this", Try it and Disconnect. The switches turn a facet off and on again
+  within what Google granted; a facet outside the grant shows as unavailable and comes back
+  through "Sign in again", which keeps the account's switches and online choice. Try it runs the
+  real lookup in every facet that is on, since the dashboard can't know which one the model would
+  pick. An account from a newer version shows its name and asks for an update, with no Disconnect,
+  since this version can't revoke its sign-in. Two notices say when no account can be read: an
+  online AI (`audienceOf`) with none shared, and a model known to take no tools. The callback's
+  `/#accounts?result=…` opens the tab and shows the outcome once, then the hash is cleared. The
+  `accounts` server event refreshes the tab, so a connect in the other companion appears without a
+  reload.
 - **Memory.** An exchange that read an account is stored with `consulted` set to the widest
   audience its accounts allow, `local` or `online`. Prompts replay it to that audience only, so
   what she read from an account kept local never reaches an online AI; the notes pass, the summary

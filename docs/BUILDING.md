@@ -49,7 +49,7 @@ bun scripts/mock-google.ts                                   # consent page, tok
 LILITH_AI_GOOGLE_URL=http://127.0.0.1:11556 LILITH_GOOGLE_CLIENT_ID=mock LILITH_GOOGLE_CLIENT_SECRET=mock bun src/main.ts --dev
 ```
 
-Then connect through the dashboard, and send `!mail laura` to the mock AI to watch a lookup. The
+Then connect on the dashboard's Accounts tab, and send `!mail laura` to the mock AI to watch a lookup. The
 same two client variables, set when running `bun build.ts`, bake a real client into the exe.
 `scripts/eval-lookups.ts` measures how a model routes questions to the lookup tools.
 
