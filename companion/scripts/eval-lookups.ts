@@ -46,9 +46,11 @@ const base = (process.env.LLM ?? "http://127.0.0.1:18080/v1").replace(/\/+$/, ""
 const samples = Number(process.env.SAMPLES ?? 3);
 const pc = process.env.PC === "1";
 const offered: Facet[] = ["web", "mail", "files"];
+/** The service names a Google account puts in the descriptions, as the real turn would. */
+const services: Record<Facet, readonly string[]> = { web: [], mail: ["Gmail"], files: ["Google Drive"], calendar: ["Google Calendar"] };
 const now = new Date("2026-10-09T19:30:00");
 
-const tools = [...(pc ? computerTools(true, false) : []), ...offered.map(lookupTool)].map((tool) => ({ name: tool.name, description: tool.description, parameters: toolSchema(tool) }));
+const tools = [...(pc ? computerTools(true, false) : []), ...offered.map((facet) => lookupTool(facet, services[facet]))].map((tool) => ({ name: tool.name, description: tool.description, parameters: toolSchema(tool) }));
 const routeOf = new Map<string, Route>([...tools.map((tool) => [tool.name, "computer"] as const), [facets.web.tool, "web"], [facets.mail.tool, "mail"], [facets.files.tool, "files"]]);
 
 const context = (lang: Lang): PromptContext => ({ language: lang, persona: defaultPersona(lang), now, playerName: "Alex", state: null, notes: [], summary: "", maxChars: 240, facets: offered, ...(pc ? { computer: { vision: true, browser: false } } : {}) });

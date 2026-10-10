@@ -50,6 +50,7 @@ describe("Google connector", () => {
     expect(connected.secret.refreshToken).toStartWith("1//");
     expect(google.secretsOf(connected.secret)).toEqual([connected.secret.refreshToken]);
     const sources = open(connected, 1);
+    expect(sources.map((reader) => [reader.facet, reader.service])).toEqual([["mail", "Gmail"], ["files", "Google Drive"], ["calendar", "Google Calendar"]]);
 
     const mail = await source(sources, "mail").search(parseQuery("laura"), never);
     expect(mail).toHaveLength(1);

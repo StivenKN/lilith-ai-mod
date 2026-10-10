@@ -177,7 +177,7 @@ export class AccountStore {
    */
   #guarded(account: Account, reader: Reader, gate: Gate | null): Source {
     const { id, label, policy } = account.view;
-    const { facet } = reader;
+    const { facet, service } = reader;
     const live = (): { source: Reader; secret: string } => {
       const current = this.#accounts.get(id);
       const source = current?.bound?.readers.find((candidate) => candidate.facet === facet);
@@ -196,6 +196,7 @@ export class AccountStore {
     return {
       id,
       facet,
+      service,
       label,
       audience: policy.shareOnline ? "online" : "local",
       search: async (query, signal) => {

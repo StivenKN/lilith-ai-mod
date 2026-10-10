@@ -144,11 +144,12 @@ describe("Brain", () => {
 });
 
 describe("Connected accounts", () => {
-  type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }> };
+  type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string; description: string } }> };
   /** Laura's mail from an account kept local, offered on player turns; the gate itself is tested in lookup/gate.test.ts. */
   const laura: Source = {
     id: "google-4f07ba118af4",
     facet: "mail",
+    service: "Gmail",
     label: "alex@gmail.com",
     audience: "local",
     search: async (query) => (query.words.includes("laura") ? [{ title: "Fotos del viaje", meta: "Laura Pérez, 2026-10-08 10:00", excerpt: "te mando las fotos del viaje", at: 1, read: async () => "Hola Alex, te mando las fotos del viaje a Cartagena." }] : []),
@@ -177,6 +178,7 @@ describe("Connected accounts", () => {
     const [first, second] = chats();
     expect(chats()).toHaveLength(2);
     expect(toolNames(first!)).toEqual(["email"]);
+    expect(first!.tools?.[0]?.function.description).toStartWith("Look in your host's email (Gmail). ");
     expect(second!.tools).toBeUndefined();
     const system = first!.messages[0]!.content;
     expect(second!.messages[0]!.content).toBe(system);

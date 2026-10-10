@@ -72,7 +72,12 @@ function order(facet: Facet, now: number): (a: Hit, b: Hit) => number {
 
 const QueryInput = z.object({ query: z.string().trim().min(1).max(200) });
 
-export const lookupTool = (facet: Facet): ToolSpec => ({ name: facets[facet].tool, description: facets[facet].description, input: QueryInput });
+/** The facet's tool, naming the connected services ("(Gmail)") where its measured description has a slot for them. */
+export const lookupTool = (facet: Facet, services: readonly string[] = []): ToolSpec => ({
+  name: facets[facet].tool,
+  description: facets[facet].description.replace("{services}", services.length > 0 ? ` (${services.join(", ")})` : ""),
+  input: QueryInput,
+});
 
 /** Matches the model's request for a search, in English or Spanish: `[search: weather in Lima]`. */
 const TAG = new RegExp(`[[(（【]\\s*(?:${facets.web.tag.join("|")})\\s*[:：]\\s*([^\\]）】\\n]{2,200}?)\\s*[\\])）】]`, "i");
@@ -103,7 +108,8 @@ export function openShelf(options: {
   const offeredFacets: Facet[] = [...(searcher ? ["web" as const] : []), ...privates];
   if (offeredFacets.length === 0) return closed;
   // One wire per session: once a private facet is offered, the web is a tool too and its tag rule leaves the prompt.
-  const toolList = privates.length ? offeredFacets.map(lookupTool) : [];
+  const servicesOf = (facet: Facet) => [...new Set(sources.filter((source) => source.facet === facet).map((source) => source.service))];
+  const toolList = privates.length ? offeredFacets.map((facet) => lookupTool(facet, servicesOf(facet))) : [];
   const facetOfTool = new Map<string, Facet>(offeredFacets.map((facet) => [facets[facet].tool, facet]));
   const mint = (facet: Facet, query: string): LookupRequest => ({ [offered]: true, facet, query });
   return {

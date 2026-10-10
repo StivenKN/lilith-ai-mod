@@ -1,7 +1,8 @@
 // The vocabulary of what Lilith can look up: one row per facet. The model only ever sees facets,
-// never services or accounts, so the tool list stays the same size however many accounts share one.
-// Tool names are fixed nouns and the descriptions are measured wording (P-SURFACE run 7: 51/54 on
-// the 4B target); tune them with scripts/eval-lookups.ts in hand.
+// never accounts, so the tool list stays the same size however many accounts share one. Tool names
+// are fixed nouns and the descriptions are measured wording (P-SURFACE run 7: 51/54 on the 4B
+// target); `{services}` becomes the connected services' names, " (Gmail)", which that run had and
+// without which the Steam-code question went to files 3/3 (48/54). Tune with scripts/eval-lookups.ts.
 
 export type Localized = { readonly en: string; readonly es: string };
 
@@ -17,7 +18,7 @@ export const facets = {
   mail: {
     exposure: "private",
     tool: "email",
-    description: "Look in your host's email. Use it when they ask whether someone wrote, replied or sent something, or about a message. `query`: the words to look for (from:name works).",
+    description: "Look in your host's email{services}. Use it when they ask whether someone wrote, replied or sent something, or about a message. `query`: the words to look for (from:name works).",
     tag: [],
     noun: { en: "email", es: "el correo" },
     label: { en: "your email", es: "tu correo" },
@@ -25,7 +26,7 @@ export const facets = {
   files: {
     exposure: "private",
     tool: "files",
-    description: "Look in your host's documents and cloud files. Use it when they ask about a file or what a document says. `query`: the words to look for.",
+    description: "Look in your host's documents and cloud files{services}. Use it when they ask about a file or what a document says. `query`: the words to look for.",
     tag: [],
     noun: { en: "files", es: "los archivos" },
     label: { en: "your files", es: "tus archivos" },
@@ -33,7 +34,7 @@ export const facets = {
   calendar: {
     exposure: "private",
     tool: "calendar",
-    description: "Look in your host's calendar. Use it when they ask about plans, meetings or dates. `query`: the words or day to look for.",
+    description: "Look in your host's calendar{services}. Use it when they ask about plans, meetings or dates. `query`: the words or day to look for.",
     tag: [],
     noun: { en: "calendar", es: "el calendario" },
     label: { en: "your calendar", es: "tu calendario" },

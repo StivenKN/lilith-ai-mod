@@ -15,6 +15,7 @@ const none: Source[] = [];
 const mailbox = (label: string, hits: Hit[] | Error): Source => ({
   id: `google-${label.replace(/\W/g, "")}`,
   facet: "mail",
+  service: "Gmail",
   label,
   audience: "local",
   search: async () => { if (hits instanceof Error) throw hits; return hits; },
@@ -44,6 +45,11 @@ describe("openShelf", () => {
     expect(shelf.facets).toEqual(["web", "mail"]);
     expect(shelf.tools.map((tool) => tool.name)).toEqual(["web_search", "email"]);
     expect(shelf.withoutTools()).toMatchObject({ facets: ["web"], tools: [] });
+    // The description names the connected services (measured: 51/54 with "(Gmail)" against 48/54 without).
+    expect(shelf.tools.find((tool) => tool.name === "email")?.description).toStartWith("Look in your host's email (Gmail). ");
+    expect(shelf.tools.find((tool) => tool.name === "web_search")?.description).toStartWith("Search the internet for current information:");
+    const two = openShelf({ gate: player, tools: true, search: off, sources: [...sources, { ...mailbox("alex@outlook.com", []), service: "Outlook" }, mailbox("sam@gmail.com", [])], log });
+    expect(two.tools[0]?.description).toStartWith("Look in your host's email (Gmail, Outlook). ");
     expect(openShelf({ gate: player, tools: true, search: off, sources, log })).toMatchObject({ facets: ["mail"] });
     expect(openShelf({ gate: player, tools: true, search: off, sources, log }).tools.map((tool) => tool.name)).toEqual(["email"]);
   });
@@ -126,7 +132,7 @@ describe("consult", () => {
     const day = 86400_000;
     const now = Date.now();
     const event = (days: number): Hit => ({ title: `Standup ${days > 0 ? "+" : ""}${days}d`, meta: "", excerpt: "", at: now + days * day });
-    const calendar: Source = { id: "google-1", facet: "calendar", label: "alex@gmail.com", audience: "local", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
+    const calendar: Source = { id: "google-1", facet: "calendar", service: "Google Calendar", label: "alex@gmail.com", audience: "local", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
     const section = await consult({ ...options, facet: "calendar", sources: [calendar] });
     expect(section.findings.map((finding) => finding.title)).toEqual(["Standup +1d", "Standup +3d", "Standup -1d", "Standup -2d", "Standup -4d"]);
   });
@@ -171,7 +177,7 @@ describe("consult", () => {
 
   test("an operator value the player never said is retried once with their content words, any of them; one they did say is not invented", async () => {
     const asked: string[] = [];
-    const source: Source = { id: "google-1", facet: "mail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
+    const source: Source = { id: "google-1", facet: "mail", service: "Gmail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
     const section = await consult({ ...options, sources: [source], query: "from:work@example.com", said: "¿me respondió el casero?" });
     // Gmail ANDs words, so the retry ORs them, and "me" and "el" would match every mail.
     expect(asked).toEqual(["", "respondio OR casero"]);

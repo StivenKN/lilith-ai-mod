@@ -243,6 +243,7 @@ function mailSource(account: Account, auth: Auth): Reader {
   const base = `${endpoints().gmail}/users/me/messages`;
   return {
     facet: "mail",
+    service: "Gmail",
     label: account.label,
     async search(query, signal) {
       const q = [query.text, query.from && `from:${query.from}`, query.window && `after:${gmailDate(query.window.since)}`, query.window && `before:${gmailDate(query.window.until)}`].filter(Boolean).join(" ");
@@ -295,6 +296,7 @@ function filesSource(account: Account, auth: Auth): Reader {
   const base = `${endpoints().drive}/files`;
   return {
     facet: "files",
+    service: "Google Drive",
     label: account.label,
     async search(query, signal) {
       const terms = ["trashed = false", query.text && `fullText contains '${driveEscape(query.text)}'`].filter(Boolean).join(" and ");
@@ -338,6 +340,7 @@ function eventStart(time: z.infer<typeof CalendarTime> | undefined): { at: numbe
 function calendarSource(account: Account, auth: Auth): Reader {
   return {
     facet: "calendar",
+    service: "Google Calendar",
     label: account.label,
     async search(query, signal) {
       const now = new Date();

@@ -23,6 +23,8 @@ export interface Hit extends Finding {
 /** A live, read-only place to look, as a connector opens it. `search` is its only verb. */
 export interface Reader {
   readonly facet: PrivateFacet;
+  /** "Gmail": the tool description names it next to the facet, which routes a 4B better (51/54 against 48/54). */
+  readonly service: string;
   /** "alex@gmail.com": named in problems and in the dashboard's Try it. */
   readonly label: string;
   search(query: Query, signal: AbortSignal): Promise<Hit[]>;
