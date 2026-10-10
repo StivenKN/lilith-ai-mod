@@ -907,8 +907,8 @@ export class Brain {
    */
   async #updateNotes(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<number | null> {
     const { memory } = this.options;
-    // Only exchanges that read the player's accounts: read past them, learn nothing.
-    if (!job.turns.some((turn) => turn.role === "user")) {
+    // Only exchanges that read the player's accounts, which the job leaves out: read past them, learn nothing.
+    if (job.turns.length === 0) {
       await memory.skipLearning(job);
       return 0;
     }
@@ -929,8 +929,8 @@ export class Brain {
 
   /** Folds one slice of older turns into the summary. Returns false if it couldn't (try again later). */
   async #summarize(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<boolean> {
-    // Only exchanges that read the player's accounts: fold past them without a line about them.
-    if (!job.turns.some((turn) => turn.role === "user")) return this.options.memory.applySummary(job, []);
+    // Only exchanges that read the player's accounts, which the job leaves out: fold past them without a line about them.
+    if (job.turns.length === 0) return this.options.memory.applySummary(job, []);
     const { system, user } = summaryPrompt(language, this.options.memory.summary, job.turns);
     const answer = await provider.chat({ system, turns: [{ role: "user", content: user }], maxTokens: 400, temperature: 0.2, ...http });
     const lines = parseSummaryLines(answer.text);

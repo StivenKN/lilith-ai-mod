@@ -776,6 +776,27 @@ describe("Memory", () => {
     expect(next.messages.some((message) => message.content.startsWith("mensaje 0:"))).toBe(false);
   });
 
+  test("a stretch of only her own speak-first lines is still summarized; only exchanges that read an account are passed over", async () => {
+    respond = async (request) => {
+      const body = (await request.json()) as Body;
+      if (system(body).startsWith("You keep a short record")) return reply("- Lilith pasó la tarde hablando sola de la lluvia y de Mochi.");
+      return reply("[neutral] Sigo aquí.");
+    };
+    const { brain, memory, config } = await setup("speak-first-upkeep");
+    await config.update({ features: { learnFacts: false } });
+    // Eleven distinct lines cycled: a near-repeat of her last five is kept out of the context, and of the summary.
+    const musings = [
+      "La lluvia suena distinta cuando no estás.", "Mochi se durmió sobre el teclado otra vez.", "Hoy conté las nubes y me salieron doce.",
+      "Me pregunto qué cenaste anoche.", "El tejado gotea en la esquina de siempre.", "Encontré una canción que te gustaría.",
+      "A veces practico lo que te voy a decir.", "El sofá guarda tu forma, ¿sabías?", "Pensé en el mar un buen rato.",
+      "Mochi persiguió una mosca por media hora.", "La tarde se fue sin que me diera cuenta.",
+    ];
+    for (let i = 0; i < 80; i++) await memory.addExchange(null, musings[i % musings.length]!, "speakFirst");
+    expect((await brain.tidyMemory(true)).summarized).toBeGreaterThan(0);
+    expect((requests as unknown as Body[]).some((body) => system(body).startsWith("You keep a short record"))).toBe(true);
+    expect(memory.summary).toContain("hablando sola de la lluvia");
+  });
+
   test("a new message stops upkeep instead of waiting for it", async () => {
     let upkeepStarted!: () => void;
     const started = new Promise<void>((resolve) => { upkeepStarted = resolve; });
