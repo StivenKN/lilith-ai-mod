@@ -16,7 +16,7 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { readTextFile, writeAtomic } from "../config.ts";
-import type { Log } from "../log.ts";
+import { errorMessage, type Log } from "../log.ts";
 import { isFacet, isPrivate, type PrivateFacet } from "../lookup/facets.ts";
 import { mayConsult, type Gate, type Policy } from "../lookup/gate.ts";
 import { LookupError, type Source } from "../lookup/sources.ts";
@@ -28,18 +28,30 @@ const FILE_VERSION = 1;
 const SETTLE_MS = 150;
 const REVOKE_TIMEOUT_MS = 5_000;
 
-const AccountFile = z.looseObject({
+/** Enough of any version's file to list it: a newer file still shows its name and facets. */
+const Listing = z.looseObject({
   version: z.int().positive(),
   id: AccountId,
   connector: z.string().min(1),
   entry: z.string().min(1),
-  label: z.string(),
-  facets: z.array(z.string()),
+  label: z.string().default(""),
+  facets: z.array(z.string()).default([]),
   policy: z.looseObject({ enabled: z.boolean().default(true), shareOnline: z.boolean().default(false) }).prefault({}),
-  status: z.enum(["ok", "reconnect"]).default("ok"),
-  addedAt: z.string(),
+  addedAt: z.string().default(""),
+});
+/** What this version reads in full and writes. A file that lists but does not parse as this (a status it does not know) needs a newer version. */
+const AccountFile = Listing.extend({
+  status: z.enum(["ok", "reconnect"]),
 });
 type AccountFile = z.infer<typeof AccountFile>;
+
+const parseJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
 
 /** What leaves the store: no credential field, so nothing to forget to mask. */
 export interface AccountView {
@@ -70,7 +82,7 @@ type Account =
 
 function bind<S, T>(connector: Connector<S, T>, file: AccountFile, secretText: string, facets: readonly PrivateFacet[]): { secrets: string[]; bound: Bound } | null {
   const settings = connector.settings.safeParse(file);
-  const secret = connector.secret.safeParse(JSON.parse(secretText));
+  const secret = connector.secret.safeParse(parseJson(secretText));
   if (!settings.success || !secret.success) return null;
   return {
     secrets: connector.secretsOf(secret.data),
@@ -239,33 +251,43 @@ export class AccountStore {
       return name.endsWith(".json") && id.success ? [id.data] : [];
     });
     for (const id of this.#accounts.keys()) if (!ids.includes(id)) this.#accounts.delete(id);
-    for (const id of ids) await this.#load(id);
+    for (const id of ids) {
+      await this.#load(id).catch((error: unknown) => {
+        this.log.warn(`skipping account ${id}: ${errorMessage(error)}`);
+        this.#accounts.delete(id);
+      });
+    }
     return JSON.stringify(this.list()) !== before;
   }
 
-  /** One account from its two files. A broken file is logged and skipped, so it costs one account, never all. */
+  /**
+   * One account from its two files. A file that does not even list is logged (never with the
+   * parser's words, which can echo the file) and skipped, so it costs one account, never all.
+   */
   async #load(id: AccountId): Promise<void> {
-    try {
-      const text = await readTextFile(this.#jsonPath(id));
-      if (text === null) return void this.#accounts.delete(id);
-      const file = AccountFile.parse(JSON.parse(text));
-      if (file.id !== id) throw new Error(`file names account ${file.id}`);
-      const entry = catalogEntry(file.entry);
-      const facets = file.facets.filter(isFacet).filter(isPrivate);
-      const base = { id, entry: file.entry, label: file.label, policy: { enabled: file.policy.enabled, shareOnline: file.policy.shareOnline }, power: entry?.power ?? "read", addedAt: file.addedAt };
-      if (file.version > FILE_VERSION || !isConnectorId(file.connector) || !entry) {
-        this.#accounts.set(id, { file: null, view: { ...base, facets, status: "needs-newer-version" }, bound: null });
-        return;
-      }
-      const connector = connectors[file.connector];
-      const secretText = await readTextFile(this.#secretPath(id));
-      const opened = secretText === null ? null : bind(connector, file, secretText, facets.filter((facet) => connector.facets.includes(facet)));
-      for (const secret of opened?.secrets ?? []) this.hide(secret);
-      this.#accounts.set(id, { file, view: { ...base, facets, status: opened ? file.status : "reconnect" }, bound: opened?.bound ?? null });
-    } catch (error) {
-      this.log.warn(`skipping account ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    const text = await readTextFile(this.#jsonPath(id));
+    if (text === null) return void this.#accounts.delete(id);
+    const json = parseJson(text);
+    const listing = Listing.safeParse(json);
+    if (!listing.success || listing.data.id !== id) {
+      this.log.warn(`skipping account ${id}: its settings file is not one this version can read`);
       this.#accounts.delete(id);
+      return;
     }
+    const { data: listed } = listing;
+    const entry = catalogEntry(listed.entry);
+    const facets = listed.facets.filter(isFacet).filter(isPrivate);
+    const base = { id, entry: listed.entry, label: listed.label, policy: { enabled: listed.policy.enabled, shareOnline: listed.policy.shareOnline }, power: entry?.power ?? "read", addedAt: listed.addedAt };
+    const file = AccountFile.safeParse(json);
+    if (!file.success || listed.version > FILE_VERSION || !isConnectorId(listed.connector) || !entry) {
+      this.#accounts.set(id, { file: null, view: { ...base, facets, status: "needs-newer-version" }, bound: null });
+      return;
+    }
+    const connector = connectors[listed.connector];
+    const secretText = await readTextFile(this.#secretPath(id));
+    const opened = secretText === null ? null : bind(connector, file.data, secretText, facets.filter((facet) => connector.facets.includes(facet)));
+    for (const secret of opened?.secrets ?? []) this.hide(secret);
+    this.#accounts.set(id, { file: file.data, view: { ...base, facets, status: opened ? file.data.status : "reconnect" }, bound: opened?.bound ?? null });
   }
 
   #emit(): void {

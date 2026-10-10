@@ -136,6 +136,26 @@ describe("AccountStore", () => {
     expect(store.sources({ origin: "player", audience: "local" }).map((source) => source.label)).toEqual(["alex@gmail.com"]);
   });
 
+  test("a newer file with a status this version lacks is listed as such, and a corrupt secret shows as reconnect and can be removed", async () => {
+    const dir = join(root, "tolerant");
+    await mkdir(dir, { recursive: true });
+    const sam = accountId("google", "sam@gmail.com");
+    const newer = { version: 2, id: sam, connector: "google", entry: "google", label: "sam@gmail.com", facets: ["mail"], policy: { enabled: true, shareOnline: false }, status: "paused", addedAt: "2027-01-01T00:00:00.000Z" };
+    await writeFile(join(dir, `${sam}.json`), JSON.stringify(newer));
+    await writeFile(join(dir, `${sam}.secret`), JSON.stringify({ refreshToken: "1//sam-secret-abcdefghijklmnop" }));
+    const kim = accountId("google", "kim@gmail.com");
+    await writeFile(join(dir, `${kim}.json`), JSON.stringify({ version: 1, id: kim, connector: "google", entry: "google", label: "kim@gmail.com", facets: ["mail"], granted: ["mail"], policy: { enabled: true, shareOnline: false }, status: "ok", addedAt: "2026-01-01T00:00:00.000Z" }));
+    await writeFile(join(dir, `${kim}.secret`), "plain:1//0gRealRefreshTokenAbc");
+    const store = await load("tolerant");
+    expect(store.list().map((view) => [view.label, view.status])).toEqual([["kim@gmail.com", "reconnect"], ["sam@gmail.com", "needs-newer-version"]]);
+    await expect(store.update(sam, { policy: { enabled: false } })).rejects.toThrow("newer version");
+    expect(JSON.parse(await readFile(join(dir, `${sam}.json`), "utf8"))).toEqual(newer);
+    await store.remove(kim);
+    expect((await readdir(dir)).filter((name) => name.startsWith(kim))).toEqual([]);
+    // The corrupt secret's bytes never reach the log through a parser message.
+    expect(JSON.stringify(logger.recent())).not.toContain("0gRealRefreshTokenAbc");
+  });
+
   test("two companions see each other's connects and disconnects through the folder watcher", async () => {
     const game = await load("shared");
     const setup = await AccountStore.load(game.dir, logger.scope("accounts"), () => {});
