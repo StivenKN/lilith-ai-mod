@@ -14,6 +14,8 @@ const TIMEOUT_MS = 10_000;
 const MAX_RESULTS = 5;
 /** Most of a document read in full; the shelf trims it further to the audience's budget. */
 const READ_MAX_BYTES = 64 * 1024;
+/** A full message larger than this (inline pictures, a long thread) is not read; its snippet stands in. */
+const FULL_MESSAGE_MAX_BYTES = 256 * 1024;
 /** Without a day in the query, the calendar is read from now to two months ahead: "what are my plans?" means what is coming. */
 const CALENDAR_AHEAD_DAYS = 60;
 
@@ -114,21 +116,29 @@ async function call(account: Account, url: string, signal: AbortSignal, retry = 
 
 const getJson = async (account: Account, url: string, signal: AbortSignal): Promise<unknown> => (await call(account, url, signal)).json();
 
-/** Reads at most `maxBytes` of a body, so a huge export never sits in memory whole. */
-async function getText(account: Account, url: string, signal: AbortSignal, maxBytes = READ_MAX_BYTES): Promise<string> {
-  const response = await call(account, url, signal);
+/** Reads at most `maxBytes` of a body, so a huge export never sits in memory whole, and says whether that was all of it. */
+async function readBody(response: Response, maxBytes: number): Promise<{ bytes: Uint8Array; complete: boolean }> {
   const reader = response.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return { bytes: new Uint8Array(), complete: true };
   const chunks: Uint8Array[] = [];
   let size = 0;
-  while (size < maxBytes) {
+  let complete = false;
+  while (size <= maxBytes) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      complete = true;
+      break;
+    }
     chunks.push(value);
     size += value.length;
   }
   await reader.cancel().catch(() => {});
-  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, maxBytes));
+  return { bytes: Buffer.concat(chunks).subarray(0, maxBytes), complete };
+}
+
+async function getText(account: Account, url: string, signal: AbortSignal): Promise<string> {
+  const { bytes } = await readBody(await call(account, url, signal), READ_MAX_BYTES);
+  return new TextDecoder().decode(bytes);
 }
 
 const parseOr = <T>(schema: z.ZodType<T>, json: unknown, what: string): T => {
@@ -137,8 +147,41 @@ const parseOr = <T>(schema: z.ZodType<T>, json: unknown, what: string): T => {
   return parsed.data;
 };
 
+const jsonOf = (bytes: Uint8Array): unknown => {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+};
+
+const ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  aacute: "á", eacute: "é", iacute: "í", oacute: "ó", uacute: "ú", ntilde: "ñ", uuml: "ü",
+  Aacute: "Á", Eacute: "É", Iacute: "Í", Oacute: "Ó", Uacute: "Ú", Ntilde: "Ñ", Uuml: "Ü",
+  iexcl: "¡", iquest: "¿", ordf: "ª", ordm: "º", deg: "°", euro: "€", copy: "©", reg: "®",
+  hellip: "…", ndash: "–", mdash: "—", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", laquo: "«", raquo: "»",
+};
+
+/** Gmail escapes snippets like HTML text, and HTML bodies carry named and numeric entities. */
+const decodeEntities = (text: string): string =>
+  text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(\w+));/gi, (match, decimal: string | undefined, hex: string | undefined, name: string | undefined) => {
+    const code = decimal ? Number(decimal) : hex ? parseInt(hex, 16) : null;
+    if (code !== null) return code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    return (name && ENTITIES[name]) ?? match;
+  });
+
 const stripHtml = (html: string): string =>
-  html.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+  decodeEntities(html.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+
+/** Bytes in the charset a mail part declares; an unknown label reads as UTF-8. */
+function decodeText(bytes: Uint8Array, charset: string | undefined): string {
+  try {
+    return new TextDecoder(charset ?? "utf-8").decode(bytes);
+  } catch {
+    return new TextDecoder().decode(bytes);
+  }
+}
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const localDate = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -149,14 +192,21 @@ const gmailDate = (date: Date) => `${date.getFullYear()}/${pad(date.getMonth() +
 
 const GmailList = z.object({ messages: z.array(z.object({ id: z.string() })).default([]) });
 const GmailHeaders = z.object({ payload: z.object({ headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]) }).optional(), snippet: z.string().default(""), internalDate: z.string().optional() });
-interface GmailPart { mimeType?: string | undefined; body?: { data?: string | undefined } | undefined; parts?: GmailPart[] | undefined }
-const GmailPart: z.ZodType<GmailPart> = z.lazy(() => z.object({ mimeType: z.string().optional(), body: z.object({ data: z.string().optional() }).optional(), parts: z.array(GmailPart).optional() }));
+const Header = z.object({ name: z.string(), value: z.string() });
+interface GmailPart { mimeType?: string | undefined; headers?: z.infer<typeof Header>[] | undefined; body?: { data?: string | undefined } | undefined; parts?: GmailPart[] | undefined }
+const GmailPart: z.ZodType<GmailPart> = z.lazy(() => z.object({ mimeType: z.string().optional(), headers: z.array(Header).optional(), body: z.object({ data: z.string().optional() }).optional(), parts: z.array(GmailPart).optional() }));
 const GmailFull = z.object({ payload: GmailPart.optional() });
 
-/** The first part of the wanted type, depth first: a multipart/alternative mail holds text/plain before text/html. */
+/**
+ * The first part of the wanted type, depth first (a multipart/alternative mail holds text/plain
+ * before text/html), in the charset its own Content-Type declares: Latin-1 senders are still common.
+ */
 function partText(part: GmailPart | undefined, mimeType: string): string | null {
   if (!part) return null;
-  if (part.mimeType === mimeType && part.body?.data) return Buffer.from(part.body.data, "base64url").toString("utf8");
+  if (part.mimeType === mimeType && part.body?.data) {
+    const contentType = part.headers?.find((header) => header.name.toLowerCase() === "content-type")?.value ?? "";
+    return decodeText(Buffer.from(part.body.data, "base64url"), /charset="?([\w-]+)"?/i.exec(contentType)?.[1]);
+  }
   for (const child of part.parts ?? []) {
     const text = partText(child, mimeType);
     if (text !== null) return text;
@@ -180,17 +230,20 @@ function mailSource(account: Account): Source {
         const message = parseOr(GmailHeaders, await getJson(account, url, signal), "mail");
         const header = (name: string) => message.payload?.headers.find((entry) => entry.name.toLowerCase() === name)?.value ?? "";
         const at = Number(message.internalDate) || Date.parse(header("date")) || 0;
+        const snippet = decodeEntities(message.snippet);
         return {
           title: header("subject") || "(no subject)",
           meta: [senderName(header("from")), at ? localDateTime(new Date(at)) : ""].filter(Boolean).join(", "),
-          excerpt: message.snippet,
+          excerpt: snippet,
           at,
           read: async (signal) => {
-            const full = parseOr(GmailFull, await getJson(account, `${base}/${encodeURIComponent(id)}?format=full`, signal), "mail body");
+            const { bytes, complete } = await readBody(await call(account, `${base}/${encodeURIComponent(id)}?format=full`, signal), FULL_MESSAGE_MAX_BYTES);
+            if (!complete) return snippet;
+            const full = parseOr(GmailFull, jsonOf(bytes), "mail body");
             const plain = partText(full.payload, "text/plain");
             if (plain !== null) return plain;
             const html = partText(full.payload, "text/html");
-            return html !== null ? stripHtml(html) : message.snippet;
+            return html !== null ? stripHtml(html) : snippet;
           },
         };
       }));

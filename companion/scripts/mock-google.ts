@@ -4,8 +4,9 @@
 // Then run the companion with LILITH_AI_GOOGLE_URL=http://127.0.0.1:11556 and any client id and
 // secret in LILITH_GOOGLE_CLIENT_ID / LILITH_GOOGLE_CLIENT_SECRET. The consent page has an "Allow"
 // link back to the redirect URI (code and state) and a "Deny" link (error=access_denied).
-// Fixtures: Laura's "Fotos del viaje" from yesterday, the landlord's "Re: arriendo de octubre",
-// an Amazon shipping mail, a Steam Guard code, a Sheet "Presupuesto octubre", a Doc "CV Alex",
+// Fixtures: Laura's "Fotos del viaje" from yesterday, the landlord's "Re: arriendo de octubre"
+// (HTML only), an Amazon shipping mail, a Steam Guard code, a bank statement in Latin-1, a huge
+// newsletter, a Sheet "Presupuesto octubre", a Doc "CV Alex",
 // a text file "notas.txt", a calendar event "Dentista" tomorrow at 15:00 and a "Reunión de equipo"
 // yesterday at 9:00.
 
@@ -17,12 +18,22 @@ const dayAt = (days: number, hour: number) => {
   return date;
 };
 
-const mails = [
+/** `htmlOnly`: no text/plain part, like a newsletter. `charset`: the text/plain part's bytes, like an older corporate sender. */
+const mails: Array<{ id: string; from: string; subject: string; at: number; text: string; htmlOnly?: true; charset?: "iso-8859-1" }> = [
   { id: "m-laura", from: "Laura Pérez <laura@example.com>", subject: "Fotos del viaje", at: dayAt(-1, 10).getTime(), text: "Hola Alex, te mando las fotos del viaje a Cartagena. Están en https://photos.example.com/viaje-2026 y hay una tuya en el muelle que te va a gustar. ¡Nos vemos el sábado!" },
-  { id: "m-casero", from: "Jorge Ramírez <casero@example.com>", subject: "Re: arriendo de octubre", at: dayAt(-3, 18).getTime(), text: "Hola Alex, sí, el pago del arriendo de octubre ya llegó. Gracias por la puntualidad. Saludos, Jorge" },
+  { id: "m-casero", from: "Jorge Ramírez <casero@example.com>", subject: "Re: arriendo de octubre", at: dayAt(-3, 18).getTime(), text: "Hola Alex, sí, el pago del arriendo de octubre ya llegó. Gracias por la puntualidad. Saludos, Jorge", htmlOnly: true },
   { id: "m-amazon", from: "Amazon.com <shipment-tracking@amazon.com>", subject: "Your package has shipped", at: dayAt(-2, 9).getTime(), text: "Your package with Logitech MX Keys is on its way and will arrive Friday. Track it at https://www.amazon.com/track/123" },
   { id: "m-steam", from: "Steam Support <noreply@steampowered.com>", subject: "Your Steam Guard code", at: dayAt(0, 0).getTime() + 30 * 60_000, text: "Your Steam Guard code is 7KQ2M. If you did not request this code, change your password." },
+  { id: "m-banco", from: "Banco Andino <alertas@bancoandino.com>", subject: "Tu extracto de septiembre", at: dayAt(-4, 8).getTime(), text: "Hola Alex, tu extracto de septiembre ya está disponible. Saldo: $1'250.000. ¡Gracias por confiar en nosotros!", charset: "iso-8859-1" },
+  { id: "m-boletin", from: "Universidad <boletin@uni.example.com>", subject: "Boletín semanal", at: dayAt(-5, 7).getTime(), text: "Boletín semanal de la universidad. ".repeat(10_000) },
 ];
+
+/** Gmail escapes snippets like HTML text, and HTML bodies arrive with named and numeric entities. */
+const escapeText = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const NAMED: Record<string, string> = { á: "&aacute;", é: "&eacute;", í: "&iacute;", ó: "&oacute;", ú: "&uacute;", ñ: "&ntilde;", "¡": "&iexcl;" };
+const escapeHtml = (text: string) => escapeText(text).replace(/[^\x20-\x7e]/g, (char) => NAMED[char] ?? `&#${char.codePointAt(0)};`);
+const partOf = (mimeType: string, text: string, charset: "iso-8859-1" | "utf-8") =>
+  ({ mimeType, headers: [{ name: "Content-Type", value: `${mimeType}; charset="${charset.toUpperCase()}"` }], body: { data: Buffer.from(text, charset === "iso-8859-1" ? "latin1" : "utf8").toString("base64url") } });
 
 const files = [
   { id: "f-presupuesto", name: "Presupuesto octubre", mimeType: "application/vnd.google-apps.spreadsheet", at: dayAt(-1, 20).getTime(), text: "Concepto,Monto\nArriendo,1200000\nMercado,450000\nInternet,90000\nAhorro,300000" },
@@ -40,7 +51,6 @@ const events = [
 const fold = (text: string) => text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
 const words = (text: string) => fold(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 const contains = (haystack: string, needles: string[]) => needles.every((word) => fold(haystack).includes(word));
-const b64url = (text: string) => Buffer.from(text, "utf8").toString("base64url");
 /** Gmail reads after:2026/10/08 in the user's time zone, so the mock does too. */
 const gmailDay = (ymd: string) => {
   const [y = 0, m = 1, d = 1] = ymd.split("/").map(Number);
@@ -151,13 +161,15 @@ export function startMockGoogle(port = 0): MockGoogle {
         const mail = mails.find((candidate) => candidate.id === message[1]);
         if (!mail) return notFound();
         const headers = [{ name: "From", value: mail.from }, { name: "Subject", value: mail.subject }, { name: "Date", value: new Date(mail.at).toUTCString() }];
+        const snippet = escapeText(mail.text.slice(0, 100));
         if (query.get("format") === "full") {
-          return Response.json({ id: mail.id, threadId: mail.id, snippet: mail.text.slice(0, 100), internalDate: String(mail.at), payload: { mimeType: "multipart/alternative", headers, parts: [
-            { mimeType: "text/plain", body: { data: b64url(mail.text) } },
-            { mimeType: "text/html", body: { data: b64url(`<div>${mail.text}</div>`) } },
-          ] } });
+          const parts = [
+            ...(mail.htmlOnly ? [] : [partOf("text/plain", mail.text, mail.charset ?? "utf-8")]),
+            partOf("text/html", `<div>${escapeHtml(mail.text)}</div>`, "utf-8"),
+          ];
+          return Response.json({ id: mail.id, threadId: mail.id, snippet, internalDate: String(mail.at), payload: { mimeType: "multipart/alternative", headers, parts } });
         }
-        return Response.json({ id: mail.id, threadId: mail.id, snippet: mail.text.slice(0, 100), internalDate: String(mail.at), payload: { mimeType: "multipart/alternative", headers } });
+        return Response.json({ id: mail.id, threadId: mail.id, snippet, internalDate: String(mail.at), payload: { mimeType: "multipart/alternative", headers } });
       }
 
       if (path === "/drive/v3/files") {

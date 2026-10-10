@@ -51,6 +51,9 @@ export interface Shelf {
 export const LOOKUP_BUDGET = { local: 1500, online: 4000 } as const satisfies Record<Audience, number>;
 const SOURCE_TIMEOUT_MS = 10_000;
 const MAX_FINDINGS = 5;
+/** Caps per field, so one 48 KB subject cannot take the whole budget. */
+const TITLE_MAX_CHARS = 200;
+const META_MAX_CHARS = 120;
 const EXCERPT_MAX_CHARS = 300;
 /** Less room than this for the full text, and only the findings go in. */
 const MIN_EXPANSION_CHARS = 80;
@@ -175,27 +178,39 @@ async function gather({ sources, facet, query, budget, signal, log }: Parameters
     .flatMap((answer) => ("hits" in answer ? answer.hits.map((hit) => ({ source: answer.source, hit })) : []))
     .sort((a, b) => byRelevance(a.hit, b.hit))
     .slice(0, MAX_FINDINGS);
-  const findings = hits.map(({ hit }) => shape(hit));
+  // The budget covers the whole section: findings are listed while they fit, and the full text gets what is left.
+  const kept: Array<{ source: Source; hit: Hit; finding: Finding }> = [];
+  let used = 0;
+  for (const { source, hit } of hits) {
+    const finding = shape(hit);
+    const size = finding.title.length + finding.meta.length + finding.excerpt.length + 8;
+    if (used + size > budget) break;
+    kept.push({ source, hit, finding });
+    used += size;
+  }
   let expanded: Section["expanded"] = null;
-  const top = hits[0];
-  const room = budget - findings.reduce((total, finding) => total + finding.title.length + finding.meta.length + finding.excerpt.length + 8, 0);
+  const top = kept[0];
+  const room = budget - used;
   if (top?.hit.read && room >= MIN_EXPANSION_CHARS) {
     const { timeout, signal } = perSource();
     try {
       const text = clean(await top.hit.read(signal), true).slice(0, room);
-      if (text) expanded = { title: findings[0]!.title, text };
+      if (text) expanded = { title: top.finding.title, text };
     } catch (error) {
       log.warn(`${facet} lookup: could not read the top finding from ${top.source.label}: ${errorMessage(error)}`);
       problems.push({ label: top.source.label, problem: error instanceof LookupError ? error.problem : timeout.aborted ? "timeout" : "unreadable" });
     }
   }
-  return { facet, findings, expanded, problems };
+  return { facet, findings: kept.map(({ finding }) => finding), expanded, problems };
 }
 
-/** No URLs and no runs of whitespace; `keepLines` leaves paragraph breaks in a full text. */
+/**
+ * No URLs, no square brackets (the note's fence, which nothing from their accounts may close), and
+ * no runs of whitespace; `keepLines` leaves paragraph breaks in a full text.
+ */
 function clean(text: string, keepLines = false): string {
-  const linked = text.replace(/https?:\/\/[^\s)>\]]+/gi, "(link)");
-  return (keepLines ? linked.replace(/[ \t\r\f\v]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n") : linked.replace(/\s+/g, " ")).trim();
+  const fenced = text.replace(/https?:\/\/[^\s)>\]]+/gi, "(link)").replace(/\[/g, "(").replace(/\]/g, ")");
+  return (keepLines ? fenced.replace(/[ \t\r\f\v]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n") : fenced.replace(/\s+/g, " ")).trim();
 }
 
-const shape = (hit: Hit): Finding => ({ title: clean(hit.title), meta: clean(hit.meta), excerpt: clean(hit.excerpt).slice(0, EXCERPT_MAX_CHARS) });
+const shape = (hit: Hit): Finding => ({ title: clean(hit.title).slice(0, TITLE_MAX_CHARS), meta: clean(hit.meta).slice(0, META_MAX_CHARS), excerpt: clean(hit.excerpt).slice(0, EXCERPT_MAX_CHARS) });

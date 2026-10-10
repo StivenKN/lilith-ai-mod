@@ -269,9 +269,10 @@ export function withTurnNote(context: PromptContext, message: string, found?: Fo
       ? "- Si te pide hacer algo en el PC, hazlo ya llamando a una herramienta. No preguntes si quiere que lo hagas ni digas que ya lo hiciste."
       : "- If they ask you to do something on the PC, do it now by calling a tool. Don't ask whether they want you to, and don't say it's done.");
   }
-  // The same lesson for lookups (P-SURFACE run 6): the line before the message is what gets a 4B to call the tool.
+  // The same lesson for lookups (P-SURFACE run 6): the line before the message is what gets a 4B to
+  // call the tool. Not once it has what it found: that request offers no tools.
   const privates = (context.facets ?? []).filter(isPrivate);
-  if (privates.length > 0) {
+  if (privates.length > 0 && !found) {
     lines.push(es
       ? `- Si te pregunta por ${listOf([...privates.map((facet) => theirs(facets[facet].noun.es)), "algo que no sabes con certeza"], " o ")}, llama ya a una herramienta en vez de responder con palabras.`
       : `- If they ask about ${listOf([...privates.map((facet) => `their ${facets[facet].noun.en}`), "something you don't know for sure"], " or ")}, call a tool now instead of replying in words.`);

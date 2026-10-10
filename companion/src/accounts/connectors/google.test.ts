@@ -74,6 +74,17 @@ describe("Google connector", () => {
     expect((await source(sources, "calendar").search(parseQuery("ayer"), never)).map((hit) => hit.title)).toEqual(["Reunión de equipo"]);
   });
 
+  test("mail text is read by its part's charset with entities decoded, and a huge message falls back to its snippet", async () => {
+    const mail = source(open(await signIn(), 7), "mail");
+    const [banco] = await mail.search(parseQuery("extracto"), never);
+    expect(banco!.excerpt).toContain("Saldo: $1'250.000");
+    expect(await banco!.read!(never)).toBe("Hola Alex, tu extracto de septiembre ya está disponible. Saldo: $1'250.000. ¡Gracias por confiar en nosotros!");
+    const [casero] = await mail.search(parseQuery("arriendo"), never);
+    expect(await casero!.read!(never)).toBe("Hola Alex, sí, el pago del arriendo de octubre ya llegó. Gracias por la puntualidad. Saludos, Jorge");
+    const [boletin] = await mail.search(parseQuery("boletín"), never);
+    expect(await boletin!.read!(never)).toBe(boletin!.excerpt);
+  });
+
   test("an expired access token is refreshed once, inside the lookup", async () => {
     const sources = open(await signIn(), 2);
     await source(sources, "mail").search(parseQuery("steam"), never);
