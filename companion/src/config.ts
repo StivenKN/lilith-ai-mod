@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { languageCodes } from "./languages.ts";
 import type { Log } from "./log.ts";
@@ -250,5 +250,18 @@ export async function writeAtomic(path: string, contents: string | Uint8Array): 
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.${process.pid}.${nextTempId++}.tmp`;
   await writeFile(temp, contents, "utf8");
-  await rename(temp, path);
+  // Windows refuses a rename onto a file while another rename to it is in flight, so retry briefly.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rename(temp, path);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (attempt < 10 && (code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+        await Bun.sleep(20 * attempt);
+        continue;
+      }
+      await rm(temp, { force: true }).catch(() => {});
+      throw error;
+    }
+  }
 }

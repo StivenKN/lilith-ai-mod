@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ConfigStore, writeAtomic, type Config } from "./config.ts";
 
 const log = { info: () => {}, warn: () => {} };
@@ -74,6 +74,13 @@ test("concurrent atomic writes to one file all succeed and one lands whole", asy
   const contents = Array.from({ length: 32 }, (_, i) => `{ "save": ${i}, "pad": "${"x".repeat(i * 40)}" }\n`);
   await Promise.all(contents.map((text) => writeAtomic(path, text)));
   expect(contents).toContain(await readFile(path, "utf8"));
+});
+
+test("a save whose rename fails leaves no temp file behind", async () => {
+  const path = await tempPath("memory.json");
+  await mkdir(path);
+  await expect(writeAtomic(path, "{}\n")).rejects.toThrow();
+  expect(await readdir(dirname(path))).toEqual(["memory.json"]);
 });
 
 test("a save from another running copy applies live", async () => {
