@@ -1,13 +1,14 @@
 ---
 name: verify
-description: Launch and drive the Lilith AI companion (companion/, Bun + React dashboard) the way a player does, without the game or Windows — chat through the simulated game plugin (scripts/sim.ts in tmux) and the dashboard in headless Chrome, against the mock AI — and capture evidence. Use to prove a change to chat, memory, cards, AI setup, the setup wizard, or any dashboard page actually works, not just that tests pass.
+description: Launch and drive the Lilith AI companion (companion/, Bun + React dashboard) the way a player does, without the game or Windows — chat through the simulated game plugin (scripts/sim.ts in tmux) and the dashboard in headless Chrome, against the mock AI — and capture evidence. Use to prove a change to chat, memory, cards, connected accounts, AI setup, the setup wizard, or any dashboard page actually works, not just that tests pass.
 ---
 
 # Verify the Lilith AI companion
 
 The game plugin (`plugin/`, C#) needs Windows and the game; it can't be driven here. Everything
 else can: the companion runs on Linux, `companion/scripts/sim.ts` plays the plugin's side of the
-stdio bridge, and `companion/scripts/mock-llm.ts` stands in for the AI. Two surfaces:
+stdio bridge, `companion/scripts/mock-llm.ts` stands in for the AI, and
+`companion/scripts/mock-google.ts` for Google's sign-in and APIs. Two surfaces:
 
 - **Game side**: the sim terminal in tmux. You type what the player types in the F7 popup; it prints
   what reaches her speech bubble (`💬 (emotion, seconds)`), status lines (`[thinking]`, `[idle]`),
@@ -25,14 +26,16 @@ Both helpers live in `.claude/skills/verify/scripts/`. Paths below are relative 
 eval "$(./session.sh env)" # exports RUN_DIR, LOGIN_URL, DASHBOARD_PORT, CDP_PORT, TMUX_SESSION, EVIDENCE, ...
 ```
 
-`up` prints the env when it's ready; it has already waited for the mock AI to answer, the
-companion to write `instance.json`, and Chrome's CDP port. Each run gets:
+`up` prints the env when it's ready; it has already waited for the mock AI and mock Google to
+answer, the companion to write `instance.json`, and Chrome's CDP port. Each run gets:
 
 - a scratch data folder `LILITH_AI_DATA_DIR=/tmp/lilith-verify/<run>/data`, seeded with a
   `config.json` that points the "Custom (OpenAI-compatible)" provider at the mock AI, English UI,
   `autoUpdate: false` (`--fresh`: only the last two). The player's real folder (`~/.config/LilithAICompanion`) is never touched.
 - `LILITH_AI_FAKE_DESKTOP=1`: computer-control turns record actions on a gray fake screen instead
   of moving your mouse.
+- `LILITH_AI_GOOGLE_URL` at the mock Google and a `mock` client id and secret, so "Sign in with
+  Google" works offline (features/accounts.md).
 - free ports for everything. The dashboard takes the first free port in 47321–47340, skipping one
   a real companion holds, so runs and a player's own companion coexist.
 
@@ -52,8 +55,8 @@ Run first, and again whenever anything looks off:
 It checks: the companion pid is alive; the dashboard port answers `/api/ping` as
 `lilith-ai-companion` with the version in `companion/package.json` and the expected mode
 (`bridge` for game, `dev` for dashboard); `instance.json` in this run's data folder names that pid
-and port (so you're not driving someone else's companion); mock AI, Chrome CDP and the tmux session
-answer. On failure it prints the companion log's tail. Don't drive a run whose doctor fails: `down`
+and port (so you're not driving someone else's companion); mock AI, mock Google, Chrome CDP and
+the tmux session answer. On failure it prints the companion log's tail. Don't drive a run whose doctor fails: `down`
 it and `up` a new one.
 
 ## Drive
@@ -79,7 +82,7 @@ so assert that *a* reply arrived and where, not its wording.
 
 ```sh
 ./cdp.ts open "$LOGIN_URL"
-./cdp.ts click "Lilith"                       # tabs: Chat, Lilith, Cards, Voice, AI, Game, Help
+./cdp.ts click "Lilith"                       # tabs: Chat, Lilith, Cards, Accounts, Voice, AI, Game, Help
 ./cdp.ts type "Message Lilith…" "Hello"      # fields by aria-label, placeholder or <label> text; replaces their text
 ./cdp.ts press Enter
 ./cdp.ts wait "Hello"                         # waits for rendered text, not placeholders (default 15 s)
@@ -116,9 +119,10 @@ A proof:
 - **Crosses surfaces when the feature does.** A reply to a dashboard message also shows in the
   game bubble when the game is connected; a game message appears in the dashboard Chat as "in the
   game"; a card written from the Cards tab prints `💌` in the sim.
-- **Mocks only the AI.** The mock AI stands at the provider boundary the app already has. Real
-  providers, Ollama model pulls, voice engines and web search hit the network or need downloads:
-  say so in the report instead of claiming them verified.
+- **Mocks only the AI and Google.** The mock AI and the mock Google stand at boundaries the app
+  already has (the provider's base URL, `LILITH_AI_GOOGLE_URL`). Real providers, Google's own
+  consent page, Ollama model pulls, voice engines and web search hit the network or need
+  downloads: say so in the report instead of claiming them verified.
 
 ## Cleanup
 
@@ -128,7 +132,7 @@ A proof:
 
 It copies the companion log into the evidence, ends the tmux session (sim.ts exits, which closes
 the companion's stdin and stops it), then signals only the pids this run recorded (companion, mock
-AI, Chrome), with SIGKILL for any still alive after a second. It deletes `data/` and `chrome/` and
+AI, mock Google, Chrome), with SIGKILL for any still alive after a second. It deletes `data/` and `chrome/` and
 keeps `evidence/`, printing its path and contents. Never `pkill bun` or `pkill chrome`: the player
 may be running their own.
 
@@ -136,7 +140,7 @@ After a failed or abandoned attempt, still run `down` for that run (set `VERIFY_
 longer `current`), then check nothing of it is left:
 
 ```sh
-ss -ltn | grep -E ":($DASHBOARD_PORT|$MOCK_PORT|$CDP_PORT) "   # should print nothing
+ss -ltn | grep -E ":($DASHBOARD_PORT|$MOCK_PORT|$GOOGLE_PORT|$CDP_PORT) "   # should print nothing
 ```
 
 ## Helpers

@@ -9,7 +9,9 @@ then the feature's file, before driving it with the [verify skill](../SKILL.md).
 - `eval "$(scripts/session.sh env)"` in the shell you drive from.
 - `scripts/session.sh doctor` passes. Never drive a companion this run didn't start.
 - The seeded config: "Custom (OpenAI-compatible)" provider at the mock AI, English UI, no
-  self-updates. Memory, notes, cards and shared things start empty.
+  self-updates. Memory, notes, cards, shared things and connected accounts start empty.
+- The fake Google (`companion/scripts/mock-google.ts`) runs on `$GOOGLE_PORT`, and the companion
+  signs in against it.
 - For the dashboard, `scripts/cdp.ts open "$LOGIN_URL"` once per run.
 
 ## Driving conventions
@@ -40,4 +42,5 @@ Each feature file has an H1 and a paragraph on what the player sees, then four H
 - [Memory](./memory.md): the Lilith tab's notes about the player, conversation summary and history.
 - [Cards](./cards.md): sharing notes and pictures, asking for a card, and the card reaching the game inbox.
 - [AI provider](./ai-provider.md): choosing, testing and saving Lilith's AI on the AI tab.
+- [Accounts](./accounts.md): signing in with Google on the Accounts tab, Try it, lookups from chat, the online gate and disconnecting.
 - [Setup wizard](./setup-wizard.md): first-run flow of the setup exe (game step, AI step, done).
