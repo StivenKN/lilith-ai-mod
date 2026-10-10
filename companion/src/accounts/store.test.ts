@@ -93,6 +93,32 @@ describe("AccountStore", () => {
     expect(mock.refreshes).toBe(calls);
   });
 
+  test("a source opened when the turn started follows the account as it is when the model finally calls", async () => {
+    const store = await load("live");
+    const gate = { origin: "player", audience: "local" } as const;
+    const view = await store.add(google, await connected(), false);
+    const [stale] = store.sources(gate);
+    // The player shares the account online while the model thinks; the credential then turns bad.
+    // The file records that on the current entry, without rolling the policy back.
+    await store.update(view.id, { policy: { shareOnline: true } });
+    mock.revokeRefreshTokens();
+    mock.expireTokens();
+    await expect(stale!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "reconnect" });
+    expect(JSON.parse(await readFile(join(store.dir, `${view.id}.json`), "utf8"))).toMatchObject({ status: "reconnect", policy: { enabled: true, shareOnline: true } });
+    // Reconnected mid-turn: the lookup already in flight uses the new credential and leaves the status alone.
+    await store.add(google, await connected(), false);
+    expect(store.list()[0]?.status).toBe("ok");
+    expect((await stale!.search(parseQuery("laura"), AbortSignal.timeout(2000))).map((hit) => hit.title)).toEqual(["Fotos del viaje"]);
+    expect(store.list()[0]?.status).toBe("ok");
+    // Paused mid-turn: refused, and a disconnect mid-turn never brings the account back.
+    await store.update(view.id, { policy: { enabled: false } });
+    await expect(stale!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "unreadable" });
+    await store.remove(view.id);
+    await expect(stale!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "unreadable" });
+    expect(await readdir(store.dir)).toEqual([]);
+    expect(store.list()).toEqual([]);
+  });
+
   test("an account from a newer version is listed as such and survives a save by this version", async () => {
     const dir = join(root, "newer");
     await mkdir(dir, { recursive: true });

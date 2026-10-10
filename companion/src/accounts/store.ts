@@ -5,6 +5,9 @@
 // account from a newer version, or on a connector this version lacks, is listed as needing a newer
 // version and never rewritten, and a broken file costs that one account, never the rest. A watcher
 // on the folder picks up what the other companion connects.
+// A turn's sources look the account up again on every call, so a pause, a disconnect or a
+// reconnect while the model thinks is honored, and a credential that turns bad is recorded only
+// while it is still the one in use.
 // There is no lock: Google refresh tokens do not rotate, so nothing is read-modify-written across
 // processes yet. A rotating connector (Microsoft) will need a per-account lock around its refresh.
 
@@ -51,23 +54,31 @@ export interface AccountView {
   addedAt: string;
 }
 
-interface Account {
-  file: AccountFile;
-  view: AccountView;
-  /** Null when this version cannot open the account (unknown connector, newer file, unreadable secret). */
-  open: (() => Source[]) | null;
-  revoke: ((signal: AbortSignal) => Promise<void>) | null;
+/** The connector's typed view of one account, once its two files parsed. */
+interface Bound {
+  /** The credential file as read, to tell a failure on it from one on a newer credential. */
+  readonly secret: string;
+  readonly sources: readonly Source[];
+  revoke(signal: AbortSignal): Promise<void>;
 }
 
-/** The connector's typed view of one account, once its two files parsed. Null leaves the account listed as reconnect. */
-function bind<S, T>(connector: Connector<S, T>, file: AccountFile, secretJson: unknown, facets: readonly PrivateFacet[]): { secrets: string[]; open: () => Source[]; revoke: (signal: AbortSignal) => Promise<void> } | null {
+type Account =
+  /** Listed only: a newer version or an unknown connector. Never written. */
+  | { readonly view: AccountView; readonly file: null; readonly bound: null }
+  /** This version's file. `bound` is null while the secret is missing or unreadable (listed as reconnect). */
+  | { readonly view: AccountView; readonly file: AccountFile; readonly bound: Bound | null };
+
+function bind<S, T>(connector: Connector<S, T>, file: AccountFile, secretText: string, facets: readonly PrivateFacet[]): { secrets: string[]; bound: Bound } | null {
   const settings = connector.settings.safeParse(file);
-  const secret = connector.secret.safeParse(secretJson);
+  const secret = connector.secret.safeParse(JSON.parse(secretText));
   if (!settings.success || !secret.success) return null;
   return {
     secrets: connector.secretsOf(secret.data),
-    open: () => connector.open({ id: file.id, label: file.label, facets, settings: settings.data, secret: secret.data }),
-    revoke: (signal) => connector.revoke(secret.data, signal),
+    bound: {
+      secret: secretText,
+      sources: connector.open({ id: file.id, label: file.label, facets, settings: settings.data, secret: secret.data }),
+      revoke: (signal) => connector.revoke(secret.data, signal),
+    },
   };
 }
 
@@ -94,34 +105,54 @@ export class AccountStore {
     return [...this.#accounts.values()].map((account) => account.view).sort((a, b) => a.addedAt.localeCompare(b.addedAt) || a.label.localeCompare(b.label));
   }
 
-  /** Sources this turn may use: the gate applied per account and facet. */
+  /** Sources this turn may use: the gate applied per account and facet, now and again at every call. */
   sources(gate: Gate): Source[] {
     return [...this.#accounts.values()].flatMap((account) =>
-      (account.open?.() ?? []).filter((source) => mayConsult(source.facet, account.view.policy, gate)).map((source) => this.#guarded(account, source)),
+      (account.bound?.sources ?? [])
+        .filter((source) => mayConsult(source.facet, account.view.policy, gate))
+        .map((source) => this.#guarded(account.view.id, source.facet, source.label, gate)),
     );
   }
 
   /** Every source of one account, policy aside: the dashboard's Try it shows the player what Lilith would see. */
   sourcesOf(id: AccountId): Source[] {
-    const account = this.#accounts.get(id);
-    return account?.open ? account.open().map((source) => this.#guarded(account, source)) : [];
+    return (this.#accounts.get(id)?.bound?.sources ?? []).map((source) => this.#guarded(id, source.facet, source.label, null));
   }
 
-  /** A source that reports a known-bad account without calling it, and records one that just turned bad. */
-  #guarded(account: Account, source: Source): Source {
+  /**
+   * A source that finds the account again when the model finally calls, with the credential and
+   * policy of that moment, reports a known-bad one without calling it, and records one that just
+   * turned bad.
+   */
+  #guarded(id: AccountId, facet: PrivateFacet, label: string, gate: Gate | null): Source {
+    const live = (): { source: Source; secret: string } => {
+      const account = this.#accounts.get(id);
+      const source = account?.bound?.sources.find((candidate) => candidate.facet === facet);
+      if (!account?.bound || !source || (gate && !mayConsult(facet, account.view.policy, gate))) throw new LookupError("unreadable", `account ${id} is no longer open to this turn`);
+      if (account.view.status === "reconnect") throw new LookupError("reconnect", `${label} needs to be connected again`);
+      return { source, secret: account.bound.secret };
+    };
     return {
-      facet: source.facet,
-      label: source.label,
+      facet,
+      label,
       search: async (query, signal) => {
-        if (account.view.status === "reconnect") throw new LookupError("reconnect", `${account.view.label} needs to be connected again`);
+        const { source, secret } = live();
         try {
           return await source.search(query, signal);
         } catch (error) {
-          if (error instanceof LookupError && error.problem === "reconnect") await this.#write(account.file.id, { ...account.file, status: "reconnect" });
+          if (error instanceof LookupError && error.problem === "reconnect") await this.#markReconnect(id, secret);
           throw error;
         }
       },
     };
+  }
+
+  /** Records a credential that just failed, on the account as it is on disk now, and only while that credential is still the one in use. */
+  async #markReconnect(id: AccountId, secret: string): Promise<void> {
+    await this.#load(id);
+    const account = this.#accounts.get(id);
+    if (!account?.file || account.bound?.secret !== secret) return;
+    await this.#write(id, { ...account.file, status: "reconnect" });
   }
 
   /** Writes both files. The same account twice (same entry and user) lands on the same id, so it converges to one. */
@@ -139,7 +170,7 @@ export class AccountStore {
   async update(id: AccountId, patch: { facets?: readonly PrivateFacet[] | undefined; policy?: { [K in keyof Policy]?: Policy[K] | undefined } | undefined }): Promise<AccountView> {
     const account = this.#accounts.get(id);
     if (!account) throw new Error(`No account ${id}`);
-    if (account.view.status === "needs-newer-version" || !isConnectorId(account.file.connector)) throw new Error(`Account ${id} needs a newer version of Lilith AI`);
+    if (!account.file || !isConnectorId(account.file.connector)) throw new Error(`Account ${id} needs a newer version of Lilith AI`);
     const allowed = connectors[account.file.connector].facets;
     const facets = patch.facets ? patch.facets.filter((facet) => allowed.includes(facet)) : account.file.facets;
     const policy = { enabled: patch.policy?.enabled ?? account.file.policy.enabled, shareOnline: patch.policy?.shareOnline ?? account.file.policy.shareOnline };
@@ -150,8 +181,8 @@ export class AccountStore {
   /** Revocation is best effort and never blocks the removal. Removing an unknown id is fine. */
   async remove(id: AccountId): Promise<void> {
     const account = this.#accounts.get(id);
-    if (account?.revoke) {
-      await account.revoke(AbortSignal.timeout(REVOKE_TIMEOUT_MS)).catch((error: unknown) => this.log.warn(`could not revoke ${id}: ${error instanceof Error ? error.message : String(error)}`));
+    if (account?.bound) {
+      await account.bound.revoke(AbortSignal.timeout(REVOKE_TIMEOUT_MS)).catch((error: unknown) => this.log.warn(`could not revoke ${id}: ${error instanceof Error ? error.message : String(error)}`));
     }
     await rm(this.#jsonPath(id), { force: true });
     await rm(this.#secretPath(id), { force: true });
@@ -223,19 +254,14 @@ export class AccountStore {
       const facets = file.facets.filter(isFacet).filter(isPrivate);
       const base = { id, entry: file.entry, label: file.label, policy: { enabled: file.policy.enabled, shareOnline: file.policy.shareOnline }, power: entry?.power ?? "read", addedAt: file.addedAt };
       if (file.version > FILE_VERSION || !isConnectorId(file.connector) || !entry) {
-        this.#accounts.set(id, { file, view: { ...base, facets, status: "needs-newer-version" }, open: null, revoke: null });
+        this.#accounts.set(id, { file: null, view: { ...base, facets, status: "needs-newer-version" }, bound: null });
         return;
       }
       const connector = connectors[file.connector];
       const secretText = await readTextFile(this.#secretPath(id));
-      const bound = secretText === null ? null : bind(connector, file, JSON.parse(secretText), facets.filter((facet) => connector.facets.includes(facet)));
-      for (const secret of bound?.secrets ?? []) this.hide(secret);
-      this.#accounts.set(id, {
-        file,
-        view: { ...base, facets, status: bound ? file.status : "reconnect" },
-        open: bound?.open ?? null,
-        revoke: bound?.revoke ?? null,
-      });
+      const opened = secretText === null ? null : bind(connector, file, secretText, facets.filter((facet) => connector.facets.includes(facet)));
+      for (const secret of opened?.secrets ?? []) this.hide(secret);
+      this.#accounts.set(id, { file, view: { ...base, facets, status: opened ? file.status : "reconnect" }, bound: opened?.bound ?? null });
     } catch (error) {
       this.log.warn(`skipping account ${id}: ${error instanceof Error ? error.message : String(error)}`);
       this.#accounts.delete(id);
