@@ -94,6 +94,13 @@ describe("Google connector", () => {
     expect(mock.refreshes).toBe(before + 1);
   });
 
+  test("three facets asked at once share one refresh", async () => {
+    const readers = open(await signIn(), 8);
+    const before = mock.refreshes;
+    await Promise.all(readers.map((reader) => reader.search(parseQuery("x"), never)));
+    expect(mock.refreshes).toBe(before + 1);
+  });
+
   test("a revoked refresh token means the account must be connected again", async () => {
     const sources = open(await signIn(), 3);
     mock.revokeRefreshTokens();

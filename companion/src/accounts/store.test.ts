@@ -191,6 +191,18 @@ describe("AccountStore", () => {
     expect(JSON.stringify(logger.recent())).not.toContain("0gRealRefreshTokenAbc");
   });
 
+  test("an access token lives with the account it was minted for: removed and connected again, the account refreshes afresh", async () => {
+    const store = await load("cache");
+    const gate = { origin: "player", audience: "local" } as const;
+    const view = await store.add(google, await connected(), false);
+    await store.sources(gate)[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000));
+    const before = mock.refreshes;
+    await store.remove(view.id);
+    await store.add(google, await connected(), false);
+    expect((await store.sources(gate)[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000))).map((hit) => hit.title)).toEqual(["Fotos del viaje"]);
+    expect(mock.refreshes).toBe(before + 1);
+  });
+
   test("two companions see each other's connects and disconnects through the folder watcher", async () => {
     const game = await load("shared");
     const setup = await AccountStore.load(game.dir, logger.scope("accounts"), () => {});

@@ -1,14 +1,14 @@
 // One Google sign-in serves three facets: Gmail, Drive and Calendar, each read-only. The mod owns
 // one "Desktop app" OAuth client whose id and secret are injected at build time (build.ts) and read
-// from the environment in development. Access tokens live in memory with their expiry; the refresh
-// token is the only thing on disk. Every response is parsed with Zod here, so nothing past this file
-// sees Google's JSON.
+// from the environment in development. Access tokens live in memory with the opened account, with
+// their expiry; the refresh token is the only thing on disk. Every response is parsed with Zod here,
+// so nothing past this file sees Google's JSON.
 
 import { z } from "zod";
 import { privateFacets, type PrivateFacet } from "../../lookup/facets.ts";
 import type { Query } from "../../lookup/query.ts";
 import { LookupError, type Hit, type Reader } from "../../lookup/sources.ts";
-import type { AccountId, Connector, OpenAccount } from "../account.ts";
+import type { Connector, OpenAccount } from "../account.ts";
 
 const TIMEOUT_MS = 10_000;
 const MAX_RESULTS = 5;
@@ -58,17 +58,14 @@ const TokenResponse = z.object({ access_token: z.string().min(1), expires_in: z.
 const TokenError = z.object({ error: z.string(), error_description: z.string().optional() });
 const UserInfo = z.object({ email: z.string().min(1) });
 
-/** Access tokens by account, refreshed lazily inside a lookup. Never written to disk. */
-const tokens = new Map<AccountId, { token: string; expiresAt: number }>();
-
 /** Google's token and revoke endpoints take form bodies. Errors come back as LookupErrors so a turn never throws. */
-async function postForm(url: string, form: Record<string, string>, signal: AbortSignal): Promise<unknown> {
+async function postForm(url: string, form: Record<string, string>, signal?: AbortSignal): Promise<unknown> {
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(url, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), signal: AbortSignal.any([signal, timeout]) });
+    response = await fetch(url, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), signal: AbortSignal.any([timeout, ...(signal ? [signal] : [])]) });
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal?.aborted) throw error;
     throw new LookupError(timeout.aborted ? "timeout" : "unreachable", `Could not reach ${url.split("?")[0]} (${error instanceof Error ? error.message : String(error)})`);
   }
   const json: unknown = await response.json().catch(() => null);
@@ -79,25 +76,50 @@ async function postForm(url: string, form: Record<string, string>, signal: Abort
   throw new LookupError(reason === "invalid_grant" ? "reconnect" : "unreachable", `Google answered ${reason}${failure.success && failure.data.error_description ? `: ${failure.data.error_description}` : ""}`);
 }
 
-async function accessToken(account: Account, signal: AbortSignal): Promise<string> {
-  const cached = tokens.get(account.id);
-  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+/** Trades the refresh token for an access token, under its own timeout: callers share one refresh, so none of their signals owns it. */
+async function refresh(account: Account): Promise<{ token: string; expiresAt: number }> {
   const client = googleClient();
   if (!client) throw new LookupError("unreachable", "This build has no Google client");
-  const json = await postForm(endpoints().token, { grant_type: "refresh_token", refresh_token: account.secret.refreshToken, client_id: client.id, client_secret: client.secret }, signal);
+  const json = await postForm(endpoints().token, { grant_type: "refresh_token", refresh_token: account.secret.refreshToken, client_id: client.id, client_secret: client.secret });
   const parsed = TokenResponse.safeParse(json);
   if (!parsed.success) throw new LookupError("unreachable", "Unexpected token response from Google");
-  tokens.set(account.id, { token: parsed.data.access_token, expiresAt: Date.now() + parsed.data.expires_in * 1000 });
-  return parsed.data.access_token;
+  return { token: parsed.data.access_token, expiresAt: Date.now() + parsed.data.expires_in * 1000 };
 }
+
+/**
+ * One opened account's access token, in memory only, refreshed lazily and once at a time: three
+ * facets asked together share one refresh. It lives as long as the opened account, so a removed
+ * or reconnected account leaves nothing behind.
+ */
+function tokenHolder(account: Account) {
+  let cached: { token: string; expiresAt: number } | null = null;
+  let refreshing: Promise<string> | null = null;
+  return {
+    async get(): Promise<string> {
+      if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+      refreshing ??= refresh(account)
+        .then((fresh) => {
+          cached = fresh;
+          return fresh.token;
+        })
+        .finally(() => { refreshing = null; });
+      return refreshing;
+    },
+    /** After a 401, and only for the token that was rejected: a late one must not discard a newer token. */
+    forget(token: string): void {
+      if (cached?.token === token) cached = null;
+    },
+  };
+}
+type Auth = ReturnType<typeof tokenHolder>;
 
 /**
  * One authenticated GET. A 401 refreshes the token once. A second one, or a 403, passes: Google
  * answers 403 for rate limits, a disabled API, a missing scope and export limits, so only a dead
  * refresh token (`invalid_grant`, from the refresh itself) means the account must be connected again.
  */
-async function call(account: Account, url: string, signal: AbortSignal, retry = true): Promise<Response> {
-  const token = await accessToken(account, signal);
+async function call(auth: Auth, url: string, signal: AbortSignal, retry = true): Promise<Response> {
+  const token = await auth.get();
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
   let response: Response;
   try {
@@ -107,14 +129,14 @@ async function call(account: Account, url: string, signal: AbortSignal, retry = 
     throw new LookupError(timeout.aborted ? "timeout" : "unreachable", `Could not reach Google (${error instanceof Error ? error.message : String(error)})`);
   }
   if (response.status === 401 && retry) {
-    tokens.delete(account.id);
-    return call(account, url, signal, false);
+    auth.forget(token);
+    return call(auth, url, signal, false);
   }
   if (!response.ok) throw new LookupError(response.status >= 500 ? "unreachable" : "unreadable", `Google answered HTTP ${response.status}`);
   return response;
 }
 
-const getJson = async (account: Account, url: string, signal: AbortSignal): Promise<unknown> => (await call(account, url, signal)).json();
+const getJson = async (auth: Auth, url: string, signal: AbortSignal): Promise<unknown> => (await call(auth, url, signal)).json();
 
 /** Reads at most `maxBytes` of a body, so a huge export never sits in memory whole, and says whether that was all of it. */
 async function readBody(response: Response, maxBytes: number): Promise<{ bytes: Uint8Array; complete: boolean }> {
@@ -136,8 +158,8 @@ async function readBody(response: Response, maxBytes: number): Promise<{ bytes: 
   return { bytes: Buffer.concat(chunks).subarray(0, maxBytes), complete };
 }
 
-async function getText(account: Account, url: string, signal: AbortSignal): Promise<string> {
-  const { bytes } = await readBody(await call(account, url, signal), READ_MAX_BYTES);
+async function getText(auth: Auth, url: string, signal: AbortSignal): Promise<string> {
+  const { bytes } = await readBody(await call(auth, url, signal), READ_MAX_BYTES);
   return new TextDecoder().decode(bytes);
 }
 
@@ -217,17 +239,17 @@ function partText(part: GmailPart | undefined, mimeType: string): string | null 
 /** "Laura Pérez <laura@example.com>" shows as Laura Pérez; a bare address stays an address. */
 const senderName = (from: string): string => /^\s*"?([^"<]+?)"?\s*</.exec(from)?.[1] ?? from.trim();
 
-function mailSource(account: Account): Reader {
+function mailSource(account: Account, auth: Auth): Reader {
   const base = `${endpoints().gmail}/users/me/messages`;
   return {
     facet: "mail",
     label: account.label,
     async search(query, signal) {
       const q = [query.text, query.from && `from:${query.from}`, query.window && `after:${gmailDate(query.window.since)}`, query.window && `before:${gmailDate(query.window.until)}`].filter(Boolean).join(" ");
-      const list = parseOr(GmailList, await getJson(account, `${base}?${new URLSearchParams({ q, maxResults: String(MAX_RESULTS) })}`, signal), "mail list");
+      const list = parseOr(GmailList, await getJson(auth,`${base}?${new URLSearchParams({ q, maxResults: String(MAX_RESULTS) })}`, signal), "mail list");
       const hits = await Promise.all(list.messages.map(async ({ id }): Promise<Hit> => {
         const url = `${base}/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-        const message = parseOr(GmailHeaders, await getJson(account, url, signal), "mail");
+        const message = parseOr(GmailHeaders, await getJson(auth,url, signal), "mail");
         const header = (name: string) => message.payload?.headers.find((entry) => entry.name.toLowerCase() === name)?.value ?? "";
         const at = Number(message.internalDate) || Date.parse(header("date")) || 0;
         const snippet = decodeEntities(message.snippet);
@@ -237,7 +259,7 @@ function mailSource(account: Account): Reader {
           excerpt: snippet,
           at,
           read: async (signal) => {
-            const { bytes, complete } = await readBody(await call(account, `${base}/${encodeURIComponent(id)}?format=full`, signal), FULL_MESSAGE_MAX_BYTES);
+            const { bytes, complete } = await readBody(await call(auth, `${base}/${encodeURIComponent(id)}?format=full`, signal), FULL_MESSAGE_MAX_BYTES);
             if (!complete) return snippet;
             const full = parseOr(GmailFull, jsonOf(bytes), "mail body");
             const plain = partText(full.payload, "text/plain");
@@ -269,7 +291,7 @@ const driveKind = (mimeType: string): string =>
 /** Drive's query language quotes with single quotes and escapes with backslashes. */
 const driveEscape = (text: string) => text.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-function filesSource(account: Account): Reader {
+function filesSource(account: Account, auth: Auth): Reader {
   const base = `${endpoints().drive}/files`;
   return {
     facet: "files",
@@ -277,7 +299,7 @@ function filesSource(account: Account): Reader {
     async search(query, signal) {
       const terms = ["trashed = false", query.text && `fullText contains '${driveEscape(query.text)}'`].filter(Boolean).join(" and ");
       const params = new URLSearchParams({ q: terms, fields: "files(id,name,mimeType,modifiedTime)", pageSize: String(MAX_RESULTS), ...(query.text ? {} : { orderBy: "modifiedTime desc" }) });
-      const list = parseOr(DriveList, await getJson(account, `${base}?${params}`, signal), "file list");
+      const list = parseOr(DriveList, await getJson(auth,`${base}?${params}`, signal), "file list");
       return list.files.map((file): Hit => {
         const at = file.modifiedTime ? Date.parse(file.modifiedTime) : 0;
         const exported = driveExports.get(file.mimeType);
@@ -288,7 +310,7 @@ function filesSource(account: Account): Reader {
           meta: [driveKind(file.mimeType), at ? localDate(new Date(at)) : ""].filter(Boolean).join(", "),
           excerpt: "",
           at,
-          ...(readUrl ? { read: (signal: AbortSignal) => getText(account, readUrl, signal) } : {}),
+          ...(readUrl ? { read: (signal: AbortSignal) => getText(auth, readUrl, signal) } : {}),
         };
       });
     },
@@ -313,7 +335,7 @@ function eventStart(time: z.infer<typeof CalendarTime> | undefined): { at: numbe
   return { at: 0, text: "" };
 }
 
-function calendarSource(account: Account): Reader {
+function calendarSource(account: Account, auth: Auth): Reader {
   return {
     facet: "calendar",
     label: account.label,
@@ -321,7 +343,7 @@ function calendarSource(account: Account): Reader {
       const now = new Date();
       const window = query.window ?? { since: now, until: new Date(now.getTime() + CALENDAR_AHEAD_DAYS * 86400_000) };
       const params = new URLSearchParams({ singleEvents: "true", orderBy: "startTime", timeMin: window.since.toISOString(), timeMax: window.until.toISOString(), maxResults: "10", ...(query.text ? { q: query.text } : {}) });
-      const list = parseOr(CalendarList, await getJson(account, `${endpoints().calendar}/calendars/primary/events?${params}`, signal), "calendar");
+      const list = parseOr(CalendarList, await getJson(auth,`${endpoints().calendar}/calendars/primary/events?${params}`, signal), "calendar");
       return list.items.map((event): Hit => {
         const start = eventStart(event.start);
         return { title: event.summary || "(untitled)", meta: start.text, excerpt: [event.location, event.description].filter(Boolean).join(". ").slice(0, 300), at: start.at };
@@ -330,7 +352,7 @@ function calendarSource(account: Account): Reader {
   };
 }
 
-const sourceFor = { mail: mailSource, files: filesSource, calendar: calendarSource } as const satisfies Record<PrivateFacet, (account: Account) => Reader>;
+const sourceFor = { mail: mailSource, files: filesSource, calendar: calendarSource } as const satisfies Record<PrivateFacet, (account: Account, auth: Auth) => Reader>;
 
 export const google: Connector<Settings, Secret> = {
   facets: privateFacets,
@@ -379,6 +401,7 @@ export const google: Connector<Settings, Secret> = {
   },
 
   open(account) {
-    return account.facets.map((facet) => sourceFor[facet](account));
+    const auth = tokenHolder(account);
+    return account.facets.map((facet) => sourceFor[facet](account, auth));
   },
 };
