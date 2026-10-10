@@ -374,7 +374,9 @@ without opening apps or injecting input. Use a temporary `LILITH_AI_DATA_DIR`, d
 updates, run `scripts/mock-llm.ts` on a spare port, and send a message starting with `!` to test a
 tool round trip. The fake desktop is never selected unless that environment variable is set.
 Likewise `LILITH_AI_GOOGLE_URL` points every Google endpoint at one local base, which
-`scripts/mock-google.ts` serves; see [Connected accounts](#connected-accounts).
+`scripts/mock-google.ts` serves; see [Connected accounts](#connected-accounts). A release build,
+which carries the Google client, defines that override away, so the exe cannot be pointed at a host
+that would receive its client secret and refresh tokens.
 
 ## Browser
 
@@ -466,50 +468,68 @@ The player can sign in with Google so Lilith can answer from their Gmail, Drive 
 ("did my landlord reply?", "what does my budget sheet say?"). She looks only when asked, never on
 her own, and never changes anything. Defined in `companion/src/accounts/` and `companion/src/lookup/`.
 
-- **Vocabulary.** The model never sees services or accounts, only facets: `web`, `mail`, `files`,
-  `calendar` (`lookup/facets.ts`). Each is one tool with a fixed noun name and a `{query}` input,
-  so the tool list stays the same size however many accounts share a facet. The descriptions and
-  the rule lines are measured wording: on the 4B target, noun tools with "when to use" descriptions
-  routed 51 of 54 questions, and an "act, don't talk" rule plus a line before the message took mail
-  from 6 of 15 to 15 of 15 (P-SURFACE runs 5 to 7). `scripts/eval-lookups.ts` reruns that
-  measurement against any OpenAI-compatible server.
+- **Vocabulary.** The model never sees accounts, only facets: `web`, `mail`, `files`, `calendar`
+  (`lookup/facets.ts`). Each is one tool with a fixed noun name and a `{query}` input, so the tool
+  list stays the same size however many accounts share a facet; the description names the
+  connected services ("Look in your host's email (Gmail)"). The descriptions and the rule lines
+  are measured wording: on the 4B target, noun tools with "when to use" descriptions routed 51 of
+  54 questions, 48 without the service names, and an "act, don't talk" rule plus a line before the
+  message took mail from 6 of 15 to 15 of 15 (P-SURFACE runs 5 to 7). `scripts/eval-lookups.ts`
+  reruns that measurement against any OpenAI-compatible server.
 - **The gate** (`lookup/gate.ts`) is one pure function. The web is always allowed. A private facet
   passes only on a player turn (never speak-first, a card reaction or the provider test), for an
   enabled account, and online only when the player ticked "Online AI may read this" for it. The
-  audience is `isLocalUrl(baseUrl)`, the same check that turns computer control on.
+  audience is `isLocalUrl(baseUrl)` plus the model name, since a local Ollama daemon serves its
+  `-cloud` and `:cloud` models from ollama.com; the same check turns computer control on.
 - **The surface.** Private facets need a model with tool support; a model without gets today's
-  web tag and no accounts (with tags, every mail question went to DuckDuckGo). Once a private
-  facet is offered, the web is a tool too and its tag rule leaves the prompt, so a session has one
-  wire. Players without an account see exactly the prompt they had.
+  web tag and no accounts (with tags, every mail question went to DuckDuckGo). The model is not
+  probed first, since a capabilities check costs an image request on online providers: one shelf
+  is opened per turn with its tools, and a model that rejects them gets the same shelf without
+  for that turn. Once a private facet is offered, the web is a tool too and its tag rule leaves
+  the prompt, so a session has one wire. Players without an account see exactly the prompt they had.
 - **A turn.** On an ordinary chat turn, the first request offers only the lookup tools. A call
   ends it: the shelf runs the lookup, and the answer comes from one request without tools, with
   the findings in the note before the message, fenced as information from their accounts, never
-  instructions. On a PC turn the lookup tools ride beside the PC tools, and a lookup ends the loop
-  before anything in its batch runs. Findings never share a request with `open_url` or `type`, so a
-  mail cannot steer a click. One lookup round per turn.
+  instructions, and without the "call a tool now" line. On a PC turn the lookup tools ride beside
+  the PC tools; a lookup asked before any action ends the loop before anything in its batch runs,
+  and one asked after an action is refused, so page text cannot steer a lookup. Within a turn,
+  findings never share a request with `open_url` or `type`, so a mail cannot steer a click. Her
+  reply, a short paraphrase in her own words, is replayed in later turns like any other exchange,
+  and with a local AI those are PC turns. One lookup round per turn.
 - **The lookup** (`lookup/shelf.ts`) fans out to every account of the facet in parallel, 10 s each
-  under the turn's signal, merges newest first (soonest first for the calendar), keeps five, reads
-  the top one in full, and trims the whole to 1,500 characters for a local model or 4,000 online.
-  Links become "(link)". A failed account is named ("you couldn't get into alex@gmail.com") and
-  never thrown. An operator query the model made up (`from:work@example.com` was logged) that
-  finds nothing is tried once more with the player's own words. Queries and findings are never
-  logged, only counts and durations.
+  under the turn's signal, merges newest first (for the calendar, what is coming up soonest first,
+  then the most recent past), keeps five, caps each title and sender, lists findings while the
+  whole section fits 1,500 characters for a local model or 4,000 online, and reads the top one in
+  full into what is left. Links become "(link)" and square brackets, the note's fence, become
+  parentheses. A failed account is named ("you couldn't get into alex@gmail.com") and never
+  thrown. An operator value the player never said (`from:work@example.com` for "did the landlord
+  reply?") that finds nothing is tried once more with the player's content words, any of them.
+  Queries and findings are never logged, only counts and durations, and the log names an account
+  by its id, never its address.
 - **Google** (`accounts/connectors/google.ts`). One "Desktop app" OAuth client, owned by the mod,
   baked into the exe at build time (`docs/GOOGLE.md`). Sign-in uses PKCE and asks for
-  `gmail.readonly`, `drive.readonly` and `calendar.readonly`; with Google's granular consent, the
-  account gets only the facets the player ticked. Mail searches Gmail and reads the top hit's
-  `text/plain` part; files search Drive's full text and export Docs, Slides and Sheets as text;
-  the calendar reads a window the query names ("mañana", "this week") or the past week to two
-  months ahead. Access tokens stay in memory with their expiry and refresh lazily inside a lookup;
-  a revoked refresh token marks the account for reconnecting.
+  `gmail.readonly`, `drive.readonly` and `calendar.readonly` afresh every time, never incremental
+  grants; with Google's granular consent, the account gets only the facets the player ticked, and
+  the file records that grant so the facets can be widened only within it. Mail searches Gmail and
+  reads the top hit's `text/plain` part in the charset its headers declare, entities decoded, a
+  message past 256 KB falling back to its snippet; files search Drive's full text and export Docs,
+  Slides and Sheets as text; the calendar reads a window the query names ("mañana", "this week")
+  or from now to two months ahead. Access tokens stay in memory with the opened account, one
+  refresh in flight at a time. Only a dead refresh token (`invalid_grant`) marks the account for
+  reconnecting; a 403 (a rate limit, a disabled API) or a build without a client passes.
 - **Storage** (`accounts/store.ts`). Never `config.json` (#18). Each account is two atomic files in
   `accounts\`: `<id>.json` with the settings, which dashboard actions write, and `<id>.secret` with
-  the credential, which only connect writes. Files parse loose: an account from a newer version or
-  an unknown connector is listed as needing a newer version and never rewritten, and a broken file
-  costs one account. A watcher on the folder lets the game's companion and the setup exe see each
-  other's connects. Nothing that leaves the store has a credential field, and every secret is
-  registered with the logger, which also hides `ya29.`, `1//` and `GOCSPX-` tokens and the OAuth
-  query parameters.
+  the credential, which only connect writes. Files parse loose: a file that lists but does not
+  parse in full (a newer version, an unknown connector, a status this version lacks) is listed as
+  needing a newer version and never rewritten, a corrupt secret leaves the account listed as
+  reconnect so it can be removed, and a broken file costs one account. A reconnect keeps the
+  policy and the narrower facets the player chose. A turn's sources look the account up again at
+  every call, so a pause, a disconnect or a reconnect while the model thinks is honored, and the
+  reconnect mark lands only on the current entry while its credential is the one that failed. On
+  startup, a secret or temp file a crash left behind is revoked and removed. A watcher on the
+  folder lets the game's companion and the setup exe see each other's connects. Nothing that
+  leaves the store has a credential field, and every secret is registered with the logger, which
+  also hides `ya29.`, `1//` and `GOCSPX-` tokens and the OAuth query parameters.
 - **Sign-in flow** (`accounts/flows.ts`, `server.ts`). The dashboard calls `connectAccount` and
   navigates to the consent URL, which is never opened or logged by the companion. Google sends the
   tab to `/api/accounts/callback` on this companion's port. That request carries no session
@@ -517,9 +537,11 @@ her own, and never changes anything. Defined in `companion/src/accounts/` and `c
   verifier, and always 302s to `/#accounts?result=…` (connected, denied, failed, expired, or
   finished for a replay). Flows live in memory in the process that started them and expire after
   ten minutes.
-- **Memory.** An exchange that read an account is stored with `consulted: true`. Prompts replay
-  it, but the notes pass, the summary pass and the cards skip it, so a fact from the player's mail
-  never becomes a permanent note or a card.
+- **Memory.** An exchange that read an account is stored with `consulted` set to the widest
+  audience its accounts allow, `local` or `online`. Prompts replay it to that audience only, so
+  what she read from an account kept local never reaches an online AI; the notes pass, the summary
+  pass and the cards skip it, so a fact from the player's mail never becomes a permanent note or
+  a card.
 
 ## Game APIs used
 

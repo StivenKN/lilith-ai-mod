@@ -31,15 +31,18 @@ Add two repository secrets on GitHub (**Settings → Secrets and variables → A
 
 `release.yml` passes them to `bun build.ts`, which bakes them into `LilithAICompanion.exe` with
 `bun build --define`. A build without them (CI, a local `bun build.ts`) hides the Google tile and
-tells the player why. The secret is a "Desktop app" secret: Google documents that it cannot be kept
-confidential in an installed app, and the flow also uses PKCE.
+tells the player why, and the release job prints a workflow warning. A build with them also
+defines `LILITH_AI_GOOGLE_URL` away, so a release cannot be pointed at another host. The secret is
+a "Desktop app" secret: Google documents that it cannot be kept confidential in an installed app,
+and the flow also uses PKCE.
 
 ## While the app is unverified
 
 - The consent screen stays in **Testing** until Google verifies the restricted scopes. In Testing,
   only the **test users** you list can sign in (up to 100), Google shows the "unverified app"
   warning, and refresh tokens expire after 7 days. The account then shows "connect again" in the
-  dashboard.
+  dashboard. Connecting again keeps the player's choices (the facets they narrowed to, the online
+  opt-in), and every sign-in asks for every scope afresh, so a scope they untick stays unticked.
 - Publishing the app without verification keeps the warning and caps the client at 100 users for
   its lifetime.
 - Verification for `gmail.readonly` and `drive.readonly` needs a privacy policy URL, a demo video
@@ -48,5 +51,7 @@ confidential in an installed app, and the flow also uses PKCE.
 ## Testing without Google
 
 `companion/scripts/mock-google.ts` serves the consent page, the token endpoints and fixtures for
-the three APIs. Point the companion at it with `LILITH_AI_GOOGLE_URL`, and set any value in the
-two client variables. `companion/src/accounts/` tests run against it.
+the three APIs, including a Latin-1 mail, an HTML-only mail and a message too big to read. Point
+the companion at it with `LILITH_AI_GOOGLE_URL` (a development build only; a release ignores it),
+and set any value in the two client variables. `companion/src/accounts/` tests run against it, and
+can expire tokens, revoke them, grant fewer scopes or answer every call with a 401 or 403.
