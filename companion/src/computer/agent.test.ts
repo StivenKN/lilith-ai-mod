@@ -32,6 +32,19 @@ test("plain chat touches nothing; a batch yields focus once and ends with one sc
   expect(typed?.text).toBe('OK Active window: "Untitled - Notepad" (notepad.exe).');
 });
 
+test("a lookup tool call ends the turn before anything in its batch runs, and before parseCall sees it", async () => {
+  const desktop = new FakeDesktop();
+  const lookup = call("email", { query: "laura" });
+  const { session, received } = scripted(step(call("open_app", { name: "Notepad" }), lookup), step());
+  expect(await run(session, desktop, { lookupTools: ["email", "web_search"] })).toEqual({ text: "", model: "test", outcome: "lookup", calls: [expect.objectContaining({ name: "open_app" }), lookup] });
+  expect(desktop.actions).toHaveLength(0);
+  expect(received).toHaveLength(1);
+  // Without the tool offered, the same call is a PC call the loop reports as unknown.
+  const plain = scripted(step(lookup), step());
+  expect(await run(plain.session, desktop)).toMatchObject({ outcome: "done" });
+  expect(plain.received[1]?.[0]).toMatchObject({ isError: true });
+});
+
 test("a failed batch action skips its dependent calls", async () => {
   const desktop = new FakeDesktop();
   const { session, received } = scripted(step(act({ action: "left_click", coordinate: [9000, 2] }), act({ action: "type", text: "danger" })), step());

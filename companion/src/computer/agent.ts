@@ -1,6 +1,6 @@
 import type { BrowserSession } from "../browser/session.ts";
 import type { HttpOptions } from "../providers/http.ts";
-import type { AgentSession, ToolResult } from "../providers/types.ts";
+import type { AgentSession, ToolCall, ToolResult } from "../providers/types.ts";
 import { parseCall, physicalPoint, screenshotSize, type Action } from "./actions.ts";
 import type { Desktop, InputWatch } from "./desktop.ts";
 import { guardAction, type Foreground } from "./guards.ts";
@@ -22,6 +22,8 @@ export interface ComputerTurnOptions {
   log: (message: string) => void;
   /** A newer queued message may preserve the reply while preventing this turn from acting. */
   canAct?: () => boolean;
+  /** Tools that end the turn before anything runs: a lookup is answered by Brain without tools. */
+  lookupTools?: readonly string[];
   /** Shorter waits for deterministic fake-desktop tests. */
   settleMs?: number;
 }
@@ -29,7 +31,9 @@ export interface ComputerTurnOptions {
 export interface ComputerTurnResult {
   text: string;
   model: string;
-  outcome: "done" | "stopped" | "superseded";
+  /** `lookup`: the model asked to look something up; `calls` carries the request for Brain's shelf. */
+  outcome: "done" | "stopped" | "superseded" | "lookup";
+  calls: readonly ToolCall[];
 }
 
 /** What a model without vision may do: everything but the mouse. The browser works by element numbers, so it's all there. */
@@ -89,6 +93,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
     signal.throwIfAborted();
   };
   const unsubscribe = options.browser?.onStop(() => controller.abort());
+  const lookups = new Set(options.lookupTools ?? []);
   /** The browser session, when this action is done in the browser. */
   const browserFor = (action: Action) => action.type === "browser" || action.type === "openUrl" ? options.browser : undefined;
   try {
@@ -98,7 +103,10 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       model = step.model;
       checkInput();
       // After terminate or answer the model only has to reply. More calls end the task anyway.
-      if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done" };
+      if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [] };
+      // A lookup is terminal and answered without tools, so nothing in its batch runs: not a PC
+      // action named beside it, and never parseCall, whose aliases must not swallow it.
+      if (step.calls.some((call) => lookups.has(call.name))) return { text: step.text, model, outcome: "lookup", calls: step.calls };
       results = [];
       let skip: string | null = null;
       let custom = false;
@@ -107,7 +115,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       const changed: Action[] = [];
       for (const call of step.calls) {
         checkInput();
-        if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded" };
+        if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [] };
         if (skip) {
           results.push({ id: call.id, text: skip, isError: true });
           continue;
@@ -154,7 +162,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
             interval = setInterval(pollInput, 25);
           }
           checkInput();
-          if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded" };
+          if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [] };
           // Coordinates picked before seeing the screen, or after an earlier action in this batch changed it, are guesses.
           if (options.vision && call.toolset !== "computer" && aimed(action) && !current) {
             throw new Error(picture === "page"
@@ -245,7 +253,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   } catch (error) {
     if (watcherFailure) throw watcherFailure;
     if (!signal.aborted) throw error;
-    return { text: "", model, outcome: "stopped" };
+    return { text: "", model, outcome: "stopped", calls: [] };
   } finally {
     if (interval) clearInterval(interval);
     watch?.close();

@@ -21,6 +21,7 @@ import { findGameDirs, inspectGame, install, payloadStatus, steamRoots, uninstal
 import { languages } from "./languages.ts";
 import { errorMessage, type Logger } from "./log.ts";
 import { privateFacets } from "./lookup/facets.ts";
+import { consult, LOOKUP_BUDGET } from "./lookup/shelf.ts";
 import { MAX_PICTURE_BYTES, type Keepsake, type Keepsakes } from "./keepsakes.ts";
 import { SUMMARY_MAX_CHARS, type Memory } from "./memory.ts";
 import type { DataPaths } from "./paths.ts";
@@ -245,6 +246,16 @@ export function createProcedures(ctx: AppContext, flows: PendingFlows) {
     disconnectAccount: procedure(z.object({ id: AccountId }), async ({ id }) => {
       await ctx.accounts.remove(id);
       return { ok: true };
+    }),
+
+    /** Try it: a real lookup in every facet of the account, so the player sees what Lilith would see. */
+    tryAccount: procedure(z.object({ id: AccountId, query: z.string().trim().min(1).max(200) }), async ({ id, query }) => {
+      const sources = ctx.accounts.sourcesOf(id);
+      if (sources.length === 0) return { ok: false as const, message: translator(ctx.brain.uiLocale())("accounts.cannotOpen") };
+      const facets = privateFacets.filter((facet) => sources.some((source) => source.facet === facet));
+      const signal = AbortSignal.timeout(30_000);
+      const sections = await Promise.all(facets.map((facet) => consult({ sources: sources.filter((source) => source.facet === facet), facet, query, budget: LOOKUP_BUDGET.online, signal, log })));
+      return { ok: true as const, query, sections };
     }),
 
     persona: procedure(none, async () => {

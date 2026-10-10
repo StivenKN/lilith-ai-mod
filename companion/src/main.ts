@@ -106,6 +106,7 @@ async function main(): Promise<void> {
     onFatal: (reason) => shutdown(2, reason),
     systemLocale: Intl.DateTimeFormat().resolvedOptions().locale,
     browser,
+    accounts,
   });
 
   const exeDir = dirname(process.execPath);

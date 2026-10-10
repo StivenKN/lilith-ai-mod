@@ -105,6 +105,20 @@ describe("Memory", () => {
     expect(memory.summary).not.toContain("enfermero");
   });
 
+  test("an exchange that read the player's accounts is replayed in the prompt but never learned, summarized or put on a card", async () => {
+    const memory = await Memory.load(await path());
+    await memory.addExchange("¿me respondió el casero?", "Sí, dice que el pago del arriendo llegó.", "game", true);
+    expect(memory.promptTurns(tiny).map((turn) => turn.content)).toContain("Sí, dice que el pago del arriendo llegó.");
+    expect(memory.learning(1)).toBeNull();
+    expect(memory.compaction({ ...tiny, keep: 0 }, true)).toMatchObject({ turns: [], through: 2 });
+    await memory.addExchange("mi gata se llama Mochi", "Qué nombre tan lindo.", "game");
+    const job = memory.learning(1)!;
+    expect(job.turns.map((turn) => turn.content)).toEqual(["mi gata se llama Mochi", "Qué nombre tan lindo."]);
+    expect(job.through).toBe(4);
+    expect(memory.recentUserMessages(8)).toEqual(["mi gata se llama Mochi"]);
+    expect(memory.history.filter((turn) => turn.consulted)).toHaveLength(2);
+  });
+
   test("reads the summary lines the model wrote, or that there was nothing worth keeping", () => {
     expect(parseSummaryLines("- Daniel contó que es enfermero.\n- **Daniel** vive en Bogotá desde hace tres años.")).toEqual(["Daniel contó que es enfermero.", "Daniel vive en Bogotá desde hace tres años."]);
     expect(parseSummaryLines("NONE")).toEqual([]);

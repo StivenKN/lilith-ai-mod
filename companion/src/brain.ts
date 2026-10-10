@@ -10,6 +10,7 @@
 // pauses, between turns, and a new message interrupts it, so it never delays a reply.
 
 import { rm } from "node:fs/promises";
+import type { AccountStore } from "./accounts/store.ts";
 import type { Config, ConfigStore } from "./config.ts";
 import { apiKeyFor, type Hotkey } from "./config.ts";
 import type { BrowserHub } from "./browser/hub.ts";
@@ -45,8 +46,8 @@ import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/oll
 import { getPreset } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { paginate, parseReply, repeatedSentences, withoutSentences } from "./reply.ts";
-import type { Facet } from "./lookup/facets.ts";
-import { audienceOf } from "./lookup/gate.ts";
+import { facets, isPrivate, type Facet } from "./lookup/facets.ts";
+import { audienceOf, originOf, type Gate } from "./lookup/gate.ts";
 import { openShelf, stripLookupTags, type Found, type LookupRequest, type Shelf } from "./lookup/shelf.ts";
 import type { SpokenLanguage } from "./voice/catalog.ts";
 import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
@@ -69,6 +70,10 @@ const AUTO_CARD_AWAY_MS = 10 * 60_000;
 const AUTO_CARD_RETRY_MS = 3600_000;
 /** Cards written while the game was closed are delivered on its next start if they're this recent. */
 const PENDING_CARD_MAX_AGE_MS = 7 * 24 * 3600_000;
+/** Without a store (tests, the provider test), she has no accounts to look in. */
+const NO_ACCOUNTS: Pick<AccountStore, "sources"> = { sources: () => [] };
+/** A shelf for this turn's gate, opened with or without tool support as it becomes known. */
+type Shelves = (tools: boolean) => Shelf;
 
 export type TurnFailure = { kind: ErrorKind | "internal"; message: string; detail: string };
 export type TurnResult =
@@ -97,6 +102,8 @@ export interface BrainOptions {
   desktop?: DesktopStatus;
   /** The browser extension's connections. Without it (tests), she has no browser tool. */
   browser?: Pick<BrowserHub, "current" | "status" | "onChange">;
+  /** The player's connected accounts. Without it (tests), she has none to look in. */
+  accounts?: Pick<AccountStore, "sources">;
 }
 
 export interface BrainEvent {
@@ -366,10 +373,11 @@ export class Brain {
     const language = this.replyLanguage();
     try {
       const provider = createProvider(settings, (message) => this.#log.warn(message));
-      const shelf = openShelf({ search: this.options.config.current.search, log: this.#log });
+      // A check is nobody's turn: it may search the web, never the player's accounts.
+      const shelves = this.#shelves({ origin: "autonomous", audience: audienceOf(settings) });
       const { text, emotion, model } = await this.#ask(provider, settings, language, [
         { role: "user", content: language === "es" ? "Hola, Lilith. ¿Me escuchas?" : "Hi Lilith. Can you hear me?" },
-      ], shelf);
+      ], shelves);
       return { ok: true, text, emotion, model, latencyMs: Math.round(performance.now() - started) };
     } catch (error) {
       const failure = this.#describe(error, settings);
@@ -408,19 +416,19 @@ export class Brain {
       const language = this.replyLanguage();
       const provider = createProvider(settings, (message) => this.#log.warn(message));
       const userTurn = input.user ?? speakFirstCue(language, Math.round(input.idleMinutes ?? 0));
-      const onSearch = (query: string) => {
-        if (!speakFirst) this.options.send({ type: "chatStatus", kind: "thinking", text: tr("status.searching", { query }) });
+      const onLookup = (request: LookupRequest) => {
+        if (!speakFirst) this.options.send({ type: "chatStatus", kind: "thinking", text: this.#lookupStatus(request, tr) });
       };
       const budget = contextBudget(isLocalProvider(settings));
       const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget), { role: "user", content: userTurn }];
-      const shelf = openShelf({ search: config.search, log: this.#log });
+      const shelves = this.#shelves({ origin: originOf[input.source], audience: audienceOf(settings) });
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
-      const { text, emotion, model } = useComputer
-        ? await this.#askComputer(provider, settings, language, turns, shelf, desktop, () => clearInterval(escalation), onSearch, input.computerEpoch)
-        : await this.#ask(provider, settings, language, turns, shelf, { onSearch });
+      const { text, emotion, model, consulted } = useComputer
+        ? await this.#askComputer(provider, settings, language, turns, shelves, desktop, () => clearInterval(escalation), onLookup, input.computerEpoch)
+        : await this.#ask(provider, settings, language, turns, shelves, { onLookup, tools: await this.#lookupToolsSupported(provider, settings, shelves) });
       const latencyMs = Math.round(performance.now() - started);
-      const stored = await this.options.memory.addExchange(input.user, text, input.source);
+      const stored = await this.options.memory.addExchange(input.user, text, input.source, consulted);
       if (!stored) this.#log.info("reply was still a near-repeat; shown, but kept out of her context");
       this.#log.info(`reply in ${latencyMs} ms from ${model} (${input.source})`);
 
@@ -470,16 +478,17 @@ export class Brain {
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
-    shelf: Shelf,
+    shelves: Shelves,
     status: Extract<DesktopStatus, { available: true }>,
     actionsStarted: () => void,
-    onSearch: (query: string) => void,
+    onLookup: (request: LookupRequest) => void,
     epoch: number | undefined,
   ) {
     const config = this.options.config.current;
     const tr = translator(this.uiLocale());
-    if (this.#stopped) return { text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model };
-    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelf, { onSearch });
+    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: false });
+    if (this.#stopped) return stopped();
+    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelves, { onLookup });
     const controller = new AbortController();
     this.#computerAbort = controller;
     this.#computerActed = false;
@@ -487,10 +496,11 @@ export class Brain {
     this.#computerDone = new Promise<void>((resolve) => { done = resolve; });
     let acted = false;
     let fellBack = false;
-    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model });
+    // Whether the model takes tools, once known: the fallback chat then still offers her accounts.
+    let tools = false;
     const fallback = async (asked: LookupRequest | null = null) => {
       fellBack = true;
-      try { return await this.#ask(provider, settings, language, turns, shelf, { onSearch, signal: controller.signal, asked }); }
+      try { return await this.#ask(provider, settings, language, turns, shelves, { onLookup, signal: controller.signal, asked, tools }); }
       catch (error) { if (controller.signal.aborted) return stopped(); throw error; }
     };
     try {
@@ -500,13 +510,16 @@ export class Brain {
       if (config === this.options.config.current) this.#computerCapabilities = capabilities;
       if (epoch !== this.#computerEpoch) return await fallback();
       if (!capabilities.tools) return await fallback();
+      tools = true;
+      const shelf = shelves(true);
       const link = this.options.browser?.current();
       const browser = link ? new BrowserSession(link, { vision: capabilities.vision }) : undefined;
       const context: PromptContext = { ...this.#promptContext(language, shelf.facets), computer: { vision: capabilities.vision, browser: !!browser } };
       let lastStatus = "";
       const run = (asked: readonly ChatTurn[], temperature: number) => runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), tools: computerTools(capabilities.vision, !!browser), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature }),
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), tools: [...computerTools(capabilities.vision, !!browser), ...shelf.tools], vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature }),
         desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
+        lookupTools: shelf.tools.map((tool) => tool.name),
         ...(browser ? { browser } : {}),
         canAct: () => epoch === this.#computerEpoch,
         yieldFocus: () => this.options.send({ type: "yieldFocus" }),
@@ -524,7 +537,8 @@ export class Brain {
       });
       let result = await run(turns, config.advanced.temperature);
       if (!acted && result.outcome === "superseded") return await fallback();
-      if (!acted && result.outcome === "done") {
+      const answered = () => result.outcome === "done" || result.outcome === "lookup";
+      if (!acted && answered()) {
         // A lookup asked before any action goes to ordinary chat with the request already chosen, so
         // the model isn't asked twice.
         const lookup = shelf.requestIn(result);
@@ -541,21 +555,21 @@ export class Brain {
         }
       }
       let text = result.outcome === "stopped" ? tr("computer.stopped") : result.text;
-      const asked = result.outcome === "done" ? shelf.requestIn(result) : null;
+      const asked = answered() ? shelf.requestIn(result) : null;
       if (asked) {
-        onSearch(asked.query);
-        const found = await shelf.look(asked, controller.signal);
-        // This final answer has no tools, so a search cannot repeat desktop actions.
+        onLookup(asked);
+        const found = await shelf.look(asked, turns.at(-1)?.content ?? "", controller.signal);
+        // This final answer has no tools, so what was found cannot drive desktop actions.
         const answer = await provider.chat({
           system: buildSystemPrompt(context),
-          turns: withNote([...withNote(turns, context), { role: "assistant", content: text }, { role: "user", content: "Answer using the search results. Do not perform or claim any additional computer actions." }], context, found),
+          turns: withNote([...withNote(turns, context), { role: "assistant", content: text || "…" }, { role: "user", content: asked.facet === "web" ? "Answer using the search results. Do not perform or claim any additional computer actions." : "Answer using what you found. Do not perform or claim any additional computer actions." }], context, found),
           maxTokens: MAX_TOKENS, temperature: config.advanced.temperature, ...http,
         });
         text = answer.text;
       }
       const reply = parseReply(stripLookupTags(text), config.advanced.maxReplyChars);
       this.#warm.add(warmKey(settings));
-      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model };
+      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model, consulted: asked !== null && isPrivate(asked.facet) };
     } catch (error) {
       if (controller.signal.aborted) return stopped();
       if (config === this.options.config.current && error instanceof ProviderError && error.kind === "no_tools") {
@@ -588,39 +602,51 @@ export class Brain {
   }
 
   /**
-   * Calls the model and shapes the answer. If the model asks for a lookup (`[search: query]`), or
-   * the computer turn already got one (`asked`), runs it and asks again with what it found. Then
-   * one retry each for empty and repeated replies.
+   * Calls the model and shapes the answer. If the model asks for a lookup (a tool call when her
+   * accounts are offered, else `[search: query]`), or the computer turn already got one (`asked`),
+   * runs it and asks again, tool-free, with what it found. Then one retry each for empty and
+   * repeated replies, tool-free on the same system prompt.
    */
   async #ask(
     provider: Provider,
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
-    shelf: Shelf,
-    { onSearch = () => {}, signal, asked = null }: { onSearch?: (query: string) => void; signal?: AbortSignal; asked?: LookupRequest | null } = {},
+    shelves: Shelves,
+    { onLookup = () => {}, signal, asked = null, tools = false }: { onLookup?: (request: LookupRequest) => void; signal?: AbortSignal; asked?: LookupRequest | null; tools?: boolean } = {},
   ) {
     const config = this.options.config.current;
-    const context = this.#promptContext(language, shelf.facets);
-    let request = {
-      system: buildSystemPrompt(context),
-      turns: withNote(turns, context),
-      maxTokens: MAX_TOKENS,
-      temperature: config.advanced.temperature,
-      timeoutMs: await this.#timeoutFor(settings),
-      ...(signal ? { signal } : {}),
-    };
+    const http = { timeoutMs: await this.#timeoutFor(settings), ...(signal ? { signal } : {}) };
+    let shelf = shelves(tools);
+    let context = this.#promptContext(language, shelf.facets);
+    const requestFor = (context: PromptContext, found?: Found): ChatRequest => ({ system: buildSystemPrompt(context), turns: withNote(turns, context, found), maxTokens: MAX_TOKENS, temperature: config.advanced.temperature, ...http });
+    let request = requestFor(context);
 
     let result: ChatResult | undefined;
     let lookup = asked;
-    if (!lookup) {
+    if (!lookup && shelf.tools.length > 0) {
+      // The first step offers only the lookup tools. A call ends it; the answer comes from a chat without tools.
+      try {
+        const step = await provider.agent({ ...request, tools: shelf.tools, vision: false }).next([], http);
+        result = { text: step.text, reasoning: "", finish: step.finish, model: step.model };
+        lookup = shelf.requestIn(step);
+      } catch (error) {
+        if (!(error instanceof ProviderError && error.kind === "no_tools")) throw error;
+        // The capability check was wrong about this model: her accounts stay closed this turn, and the check learns.
+        this.#log.warn(`${settings.model} rejected the lookup tools; answering without her accounts`);
+        shelf = shelves(false);
+        context = this.#promptContext(language, shelf.facets);
+        request = requestFor(context);
+      }
+    }
+    if (!lookup && !result) {
       result = await provider.chat(request);
       lookup = shelf.requestIn(result);
     }
     if (lookup) {
-      onSearch(lookup.query);
-      const found = await shelf.look(lookup, signal);
-      request = { ...request, turns: withNote(turns, context, found) };
+      onLookup(lookup);
+      const found = await shelf.look(lookup, turns.at(-1)?.content ?? "", signal);
+      request = requestFor(context, found);
       result = await provider.chat(request);
     }
     const { reply: first, model } = await this.#complete(provider, request, config.advanced.maxReplyChars, result);
@@ -642,7 +668,33 @@ export class Brain {
       reply = { ...reply, text: kept.text };
     }
     this.#warm.add(warmKey(settings));
-    return { text: reply.text, emotion: reply.emotion, model };
+    return { text: reply.text, emotion: reply.emotion, model, consulted: lookup !== null && isPrivate(lookup.facet) };
+  }
+
+  #shelves(gate: Gate): Shelves {
+    const { config, accounts = NO_ACCOUNTS } = this.options;
+    return (tools) => openShelf({ gate, tools, search: config.current.search, accounts, log: this.#log });
+  }
+
+  /**
+   * Whether to offer her accounts as tools on an ordinary chat turn. The model is only asked when
+   * an account passes this turn's gate, so players without one pay nothing new.
+   */
+  async #lookupToolsSupported(provider: Provider, settings: ProviderSettings, shelves: Shelves): Promise<boolean> {
+    if (!shelves(true).facets.some(isPrivate)) return false;
+    const config = this.options.config.current;
+    try {
+      const capabilities = await provider.capabilities({ timeoutMs: Math.min(180_000, await this.#timeoutFor(settings)) });
+      if (config === this.options.config.current) this.#computerCapabilities = capabilities;
+      return capabilities.tools;
+    } catch (error) {
+      this.#log.warn(`could not check whether ${settings.model} takes tools; answering without her accounts: ${errorMessage(error)}`);
+      return false;
+    }
+  }
+
+  #lookupStatus(request: LookupRequest, tr: Translate): string {
+    return request.facet === "web" ? tr("status.searching", { query: request.query }) : tr("status.looking", { what: facets[request.facet].label[this.uiLocale()] });
   }
 
   /**
@@ -867,6 +919,11 @@ export class Brain {
    */
   async #updateNotes(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<number | null> {
     const { memory } = this.options;
+    // Only exchanges that read the player's accounts: read past them, learn nothing.
+    if (!job.turns.some((turn) => turn.role === "user")) {
+      await memory.skipLearning(job);
+      return 0;
+    }
     const { system, user } = notesPrompt(language, memory.notes, job.turns, new Date());
     const answer = await provider.chat({ system, turns: [{ role: "user", content: user }], maxTokens: 600, temperature: 0.2, json: noteChangesFormat, ...http });
     const changes = parseNoteChanges(answer.text);
@@ -884,6 +941,8 @@ export class Brain {
 
   /** Folds one slice of older turns into the summary. Returns false if it couldn't (try again later). */
   async #summarize(provider: Provider, job: UpkeepJob, language: Language, http: UpkeepHttp): Promise<boolean> {
+    // Only exchanges that read the player's accounts: fold past them without a line about them.
+    if (!job.turns.some((turn) => turn.role === "user")) return this.options.memory.applySummary(job, []);
     const { system, user } = summaryPrompt(language, this.options.memory.summary, job.turns);
     const answer = await provider.chat({ system, turns: [{ role: "user", content: user }], maxTokens: 400, temperature: 0.2, ...http });
     const lines = parseSummaryLines(answer.text);
