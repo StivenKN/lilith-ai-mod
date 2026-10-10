@@ -510,6 +510,32 @@ describe("Memory", () => {
     expect(chats.every((body) => body.tools)).toBe(true);
   });
 
+  test("asked for the same thing on the PC again, she does it again instead of only saying so", async () => {
+    const desktop = new FakeDesktop();
+    const openNotepad = { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Bloc de notas" } } }] };
+    let plain = 0;
+    respond = async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+      if (path === "/api/ps") return Response.json({ models: [] });
+      const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
+      if (body.messages.some((message) => message.role === "tool")) return Response.json({ message: { content: desktop.actions.length === 1 ? "[feliz] Abrí el bloc de notas." : "[feliz] Listo, ahí lo tienes otra vez." } });
+      // Without tools she can only talk; with them, the second plain ask repeats her last words and the cued retry acts.
+      if (!body.tools) return Response.json({ message: { content: "[feliz] Ya te lo abrí antes." } });
+      if (++plain === 2) return Response.json({ message: { content: "[feliz] Abrí el bloc de notas." } });
+      return Response.json({ message: openNotepad });
+    };
+    const { brain, config } = await setup("computer-repeat-request", { desktop: { available: true, desktop } });
+    await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "computer-repeat-request" }, features: { computerControl: "on", learnFacts: false } });
+    expect(await brain.chat("abre el bloc de notas", "game")).toMatchObject({ ok: true, text: "Abrí el bloc de notas." });
+    expect(await brain.chat("abre el bloc de notas", "game")).toMatchObject({ ok: true, text: "Listo, ahí lo tienes otra vez." });
+    expect(desktop.actions).toEqual([{ type: "openApp", name: "Bloc de notas" }, { type: "openApp", name: "Bloc de notas" }]);
+    const chats = (requests as unknown as Array<{ tools?: unknown; messages?: Array<{ content: string }> }>).filter((body) => body.messages);
+    const retry = chats[3]!;
+    expect(retry.tools).toBeDefined();
+    expect(retry.messages!.at(-1)!.content).toContain("hazlo ahora con una herramienta");
+  });
+
   test("upkeep learns notes from whole exchanges and folds older turns into a summary that the next reply reads", async () => {
     const lines = ["Hoy el cielo se ve tranquilo", "Me gusta cuando me cuentas eso", "Mochi debe estar dormida otra vez", "Qué rico, arepas con queso", "Te espero aquí, como siempre", "Ese solo de guitarra es difícil"];
     let n = 0;
