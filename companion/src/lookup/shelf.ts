@@ -54,8 +54,16 @@ const MAX_FINDINGS = 5;
 const EXCERPT_MAX_CHARS = 300;
 /** Less room than this for the full text, and only the findings go in. */
 const MIN_EXPANSION_CHARS = 80;
-/** Facets whose findings read best soonest first; the rest go newest first. */
-const SOONEST_FIRST: ReadonlySet<Facet> = new Set(["calendar"]);
+
+/** Newest first, except the calendar: what is coming up, soonest first, and only then the most recent past. */
+function order(facet: Facet, now: number): (a: Hit, b: Hit) => number {
+  if (facet !== "calendar") return (a, b) => b.at - a.at;
+  return (a, b) => {
+    const [aUp, bUp] = [a.at >= now, b.at >= now];
+    if (aUp !== bUp) return aUp ? -1 : 1;
+    return aUp ? a.at - b.at : b.at - a.at;
+  };
+}
 
 const QueryInput = z.object({ query: z.string().trim().min(1).max(200) });
 
@@ -162,9 +170,10 @@ async function gather({ sources, facet, query, budget, signal, log }: Parameters
     }
   }));
   const problems = answers.flatMap((answer) => ("problem" in answer ? [{ label: answer.source.label, problem: answer.problem }] : []));
+  const byRelevance = order(facet, Date.now());
   const hits = answers
     .flatMap((answer) => ("hits" in answer ? answer.hits.map((hit) => ({ source: answer.source, hit })) : []))
-    .sort((a, b) => (SOONEST_FIRST.has(facet) ? a.hit.at - b.hit.at : b.hit.at - a.hit.at))
+    .sort((a, b) => byRelevance(a.hit, b.hit))
     .slice(0, MAX_FINDINGS);
   const findings = hits.map(({ hit }) => shape(hit));
   let expanded: Section["expanded"] = null;

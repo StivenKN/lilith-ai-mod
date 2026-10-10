@@ -14,8 +14,7 @@ const TIMEOUT_MS = 10_000;
 const MAX_RESULTS = 5;
 /** Most of a document read in full; the shelf trims it further to the audience's budget. */
 const READ_MAX_BYTES = 64 * 1024;
-/** Without a day in the query, the calendar is read from a week ago to two months ahead. */
-const CALENDAR_PAST_DAYS = 7;
+/** Without a day in the query, the calendar is read from now to two months ahead: "what are my plans?" means what is coming. */
 const CALENDAR_AHEAD_DAYS = 60;
 
 /** Set at build time through `bun build --define`; in development, from the shell. Neither value lives in the repo. */
@@ -267,7 +266,7 @@ function calendarSource(account: Account): Source {
     label: account.label,
     async search(query, signal) {
       const now = new Date();
-      const window = query.window ?? { since: new Date(now.getTime() - CALENDAR_PAST_DAYS * 86400_000), until: new Date(now.getTime() + CALENDAR_AHEAD_DAYS * 86400_000) };
+      const window = query.window ?? { since: now, until: new Date(now.getTime() + CALENDAR_AHEAD_DAYS * 86400_000) };
       const params = new URLSearchParams({ singleEvents: "true", orderBy: "startTime", timeMin: window.since.toISOString(), timeMax: window.until.toISOString(), maxResults: "10", ...(query.text ? { q: query.text } : {}) });
       const list = parseOr(CalendarList, await getJson(account, `${endpoints().calendar}/calendars/primary/events?${params}`, signal), "calendar");
       return list.items.map((event): Hit => {

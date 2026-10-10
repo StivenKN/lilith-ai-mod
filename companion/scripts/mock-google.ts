@@ -6,7 +6,8 @@
 // link back to the redirect URI (code and state) and a "Deny" link (error=access_denied).
 // Fixtures: Laura's "Fotos del viaje" from yesterday, the landlord's "Re: arriendo de octubre",
 // an Amazon shipping mail, a Steam Guard code, a Sheet "Presupuesto octubre", a Doc "CV Alex",
-// a text file "notas.txt", and a calendar event "Dentista" tomorrow at 15:00.
+// a text file "notas.txt", a calendar event "Dentista" tomorrow at 15:00 and a "Reunión de equipo"
+// yesterday at 9:00.
 
 /** A local time `days` from today at `hour`, so "ayer" and "mañana" mean the same whenever the mock runs. */
 const dayAt = (days: number, hour: number) => {
@@ -30,8 +31,10 @@ const files = [
 ];
 
 const dentist = dayAt(1, 15);
+const standup = dayAt(-1, 9);
 const events = [
   { id: "e-dentista", summary: "Dentista", start: dentist, end: new Date(dentist.getTime() + 3600_000), location: "Clínica Sonrisa, calle 85" },
+  { id: "e-standup", summary: "Reunión de equipo", start: standup, end: new Date(standup.getTime() + 1800_000), location: "Meet" },
 ];
 
 const fold = (text: string) => text.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");

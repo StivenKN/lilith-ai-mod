@@ -69,7 +69,9 @@ describe("Google connector", () => {
 
     const events = await source(sources, "calendar").search(parseQuery("mañana"), never);
     expect(events).toEqual([{ title: "Dentista", meta: expect.stringMatching(/^\d{4}-\d{2}-\d{2} 15:00$/), excerpt: "Clínica Sonrisa, calle 85", at: expect.any(Number) }]);
-    expect(await source(sources, "calendar").search(parseQuery("ayer"), never)).toEqual([]);
+    // Without a day word the calendar starts now, so yesterday's meeting shows only when asked for.
+    expect((await source(sources, "calendar").search(parseQuery(""), never)).map((hit) => hit.title)).toEqual(["Dentista"]);
+    expect((await source(sources, "calendar").search(parseQuery("ayer"), never)).map((hit) => hit.title)).toEqual(["Reunión de equipo"]);
   });
 
   test("an expired access token is refreshed once, inside the lookup", async () => {

@@ -121,6 +121,15 @@ describe("consult", () => {
     expect(section.problems).toEqual([]);
   });
 
+  test("the calendar lists what is coming up first, soonest first, and only then the most recent past", async () => {
+    const day = 86400_000;
+    const now = Date.now();
+    const event = (days: number): Hit => ({ title: `Standup ${days > 0 ? "+" : ""}${days}d`, meta: "", excerpt: "", at: now + days * day });
+    const calendar: Source = { facet: "calendar", label: "alex@gmail.com", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
+    const section = await consult({ ...options, facet: "calendar", sources: [calendar] });
+    expect(section.findings.map((finding) => finding.title)).toEqual(["Standup +1d", "Standup +3d", "Standup -1d", "Standup -2d", "Standup -4d"]);
+  });
+
   test("the full text is cut to the audience's budget, and skipped when the findings leave no room", async () => {
     const long = mailbox("a", [hit("Carta", 1, { read: async () => "x".repeat(5000) })]);
     const [finding] = (await consult({ ...options, sources: [long] })).findings;
