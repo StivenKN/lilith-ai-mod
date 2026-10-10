@@ -28,8 +28,10 @@ export interface Reader {
   search(query: Query, signal: AbortSignal): Promise<Hit[]>;
 }
 
-/** A reader the store let through, with what an exchange that used it must remember. */
+/** A reader the store let through, with what the log and an exchange that used it must know. */
 export interface Source extends Reader {
+  /** The account id, for the log: the address never reaches it. */
+  readonly id: string;
   /** The widest audience the player allowed for the account: online only when they ticked "Online AI may read this". */
   readonly audience: Audience;
 }

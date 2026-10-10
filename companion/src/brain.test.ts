@@ -147,6 +147,7 @@ describe("Connected accounts", () => {
   type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }> };
   /** Laura's mail from an account kept local, offered on player turns; the gate itself is tested in lookup/gate.test.ts. */
   const laura: Source = {
+    id: "google-4f07ba118af4",
     facet: "mail",
     label: "alex@gmail.com",
     audience: "local",

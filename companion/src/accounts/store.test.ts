@@ -121,10 +121,11 @@ describe("AccountStore", () => {
     await expect(source!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "reconnect" });
     expect(store.list()[0]?.status).toBe("reconnect");
     expect(JSON.parse(await readFile(join(store.dir, `${view!.id}.json`), "utf8"))).toMatchObject({ status: "reconnect" });
-    // Known bad: the next lookup says so without calling Google.
+    // Known bad: the next lookup says so without calling Google, naming the account by id since the shelf logs the message.
     const calls = mock.refreshes;
-    await expect(store.sources({ origin: "player", audience: "local" })[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "reconnect" });
+    await expect(store.sources({ origin: "player", audience: "local" })[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000))).rejects.toMatchObject({ problem: "reconnect", message: expect.not.stringContaining("@") });
     expect(mock.refreshes).toBe(calls);
+    expect(store.sources({ origin: "player", audience: "local" })[0]).toMatchObject({ id: view!.id, label: "alex@gmail.com" });
   });
 
   test("a source opened when the turn started follows the account as it is when the model finally calls", async () => {

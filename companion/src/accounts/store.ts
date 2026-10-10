@@ -148,7 +148,7 @@ export class AccountStore {
       const current = this.#accounts.get(id);
       const source = current?.bound?.readers.find((candidate) => candidate.facet === facet);
       if (!current?.bound || !source || (gate && !mayConsult(facet, current.view.policy, gate))) throw new LookupError("unreadable", `account ${id} is no longer open to this turn`);
-      if (current.view.status === "reconnect") throw new LookupError("reconnect", `${label} needs to be connected again`);
+      if (current.view.status === "reconnect") throw new LookupError("reconnect", `account ${id} needs to be connected again`);
       return { source, secret: current.bound.secret };
     };
     const recording = async <T>(secret: string, run: () => Promise<T>): Promise<T> => {
@@ -160,6 +160,7 @@ export class AccountStore {
       }
     };
     return {
+      id,
       facet,
       label,
       audience: policy.shareOnline ? "online" : "local",

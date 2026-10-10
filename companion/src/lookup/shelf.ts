@@ -157,8 +157,7 @@ export async function consult(options: { sources: readonly Source[]; facet: Priv
     options.log.info(`${options.facet} lookup found nothing for an invented query; trying the player's words`);
     section = await gather({ ...options, query: said });
   }
-  const problems = section.problems.map((problem) => `${problem.label} ${problem.problem}`).join(", ");
-  options.log.info(`${options.facet} lookup: ${section.findings.length} finding(s) from ${options.sources.length} account(s) in ${Math.round(performance.now() - started)} ms${section.expanded ? ", top read in full" : ""}${problems ? ` (${problems})` : ""}`);
+  options.log.info(`${options.facet} lookup: ${section.findings.length} finding(s) from ${options.sources.length} account(s) in ${Math.round(performance.now() - started)} ms${section.expanded ? ", top read in full" : ""}${section.problems.length ? `, ${section.problems.length} failed` : ""}`);
   return section;
 }
 
@@ -174,7 +173,7 @@ async function gather({ sources, facet, query, budget, signal, log }: Parameters
     try {
       return { source, hits: await source.search(parsed, signal) };
     } catch (error) {
-      log.warn(`${facet} lookup: ${source.label} failed: ${errorMessage(error)}`);
+      log.warn(`${facet} lookup: ${source.id} failed: ${errorMessage(error)}`);
       return { source, problem: problem(error, timeout) };
     }
   }));
@@ -203,7 +202,7 @@ async function gather({ sources, facet, query, budget, signal, log }: Parameters
       const text = clean(await top.hit.read(signal), true).slice(0, room);
       if (text) expanded = { title: top.finding.title, text };
     } catch (error) {
-      log.warn(`${facet} lookup: could not read the top finding from ${top.source.label}: ${errorMessage(error)}`);
+      log.warn(`${facet} lookup: could not read the top finding from ${top.source.id}: ${errorMessage(error)}`);
       problems.push({ label: top.source.label, problem: error instanceof LookupError ? error.problem : timeout.aborted ? "timeout" : "unreadable" });
     }
   }

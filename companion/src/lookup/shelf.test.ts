@@ -4,7 +4,8 @@ import type { Gate } from "./gate.ts";
 import { consult, openShelf, stripLookupTags } from "./shelf.ts";
 import { LookupError, type Hit, type Source } from "./sources.ts";
 
-const log = new Logger(null).scope("test");
+const logger = new Logger(null);
+const log = logger.scope("test");
 const off = { mode: "off" as const, apiKey: "" };
 const firecrawl = { mode: "firecrawl" as const, apiKey: "fc-test-key-123456" };
 const player: Gate = { origin: "player", audience: "local" };
@@ -12,6 +13,7 @@ const none: Source[] = [];
 
 /** A mail account that answers every query with the same hits, or throws. */
 const mailbox = (label: string, hits: Hit[] | Error): Source => ({
+  id: `google-${label.replace(/\W/g, "")}`,
   facet: "mail",
   label,
   audience: "local",
@@ -124,7 +126,7 @@ describe("consult", () => {
     const day = 86400_000;
     const now = Date.now();
     const event = (days: number): Hit => ({ title: `Standup ${days > 0 ? "+" : ""}${days}d`, meta: "", excerpt: "", at: now + days * day });
-    const calendar: Source = { facet: "calendar", label: "alex@gmail.com", audience: "local", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
+    const calendar: Source = { id: "google-1", facet: "calendar", label: "alex@gmail.com", audience: "local", search: async () => [-6, -5, -4, -2, -1, 1, 3].map(event) };
     const section = await consult({ ...options, facet: "calendar", sources: [calendar] });
     expect(section.findings.map((finding) => finding.title)).toEqual(["Standup +1d", "Standup +3d", "Standup -1d", "Standup -2d", "Standup -4d"]);
   });
@@ -160,11 +162,16 @@ describe("consult", () => {
     expect(section.problems).toEqual([{ label: "alex@old.com", problem: "reconnect" }, { label: "alex@work.com", problem: "unreachable" }]);
     const unreadable = mailbox("alex@gmail.com", [hit("Fotos", 1, { read: async () => { throw new Error("export failed"); } })]);
     expect((await consult({ ...options, sources: [unreadable] })).problems).toEqual([{ label: "alex@gmail.com", problem: "unreadable" }]);
+    // The log names the account by id: the address stays out of bug reports.
+    const logged = logger.recent().map((entry) => entry.message).filter((message) => /failed|could not read/.test(message));
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged.some((message) => message.includes("@"))).toBe(false);
+    expect(logged.some((message) => message.includes("google-alexoldcom"))).toBe(true);
   });
 
   test("an invented operator query that finds nothing is retried once with the player's own words", async () => {
     const asked: string[] = [];
-    const source: Source = { facet: "mail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
+    const source: Source = { id: "google-1", facet: "mail", label: "alex@gmail.com", audience: "local", search: async (query) => { asked.push(query.text); return query.words.includes("casero") ? [hit("Re: arriendo", 1)] : []; } };
     const section = await consult({ ...options, sources: [source], query: "from:work@example.com", said: "¿me respondió el casero?" });
     expect(asked).toEqual(["", "¿me respondió el casero?"]);
     expect(section.findings).toHaveLength(1);
