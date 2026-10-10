@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findSearchRequest, parseDuckDuckGoLite, stripSearchTags } from "./search.ts";
+import { parseDuckDuckGoLite } from "./search.ts";
 
 // Trimmed from a real lite.duckduckgo.com response.
 const lite = `
@@ -24,20 +24,5 @@ describe("parseDuckDuckGoLite", () => {
       { title: "Lima - BBC Weather", url: "https://www.bbc.com/weather/3936456", snippet: `Lima weather & forecast, with "hourly" updates's view.` },
       { title: "Lima 10-Day Forecast", url: "https://weather.com/lima", snippet: "Ten days ahead." },
     ]);
-  });
-});
-
-describe("findSearchRequest", () => {
-  test.each([
-    ["[search: weather in Lima today]", "weather in Lima today"],
-    ["[buscar: precio del dólar]", "precio del dólar"],
-    ['<think>maybe [search: no]</think> [Search: "new Zelda release date"]', "new Zelda release date"],
-    ["[happy] Of course!", null],
-  ])("%s", (reply, query) => {
-    expect(findSearchRequest(reply)).toBe(query);
-  });
-
-  test("stripSearchTags leaves the rest of the reply", () => {
-    expect(stripSearchTags("[feliz] Ya busqué. [buscar: algo]").trim()).toBe("[feliz] Ya busqué.");
   });
 });

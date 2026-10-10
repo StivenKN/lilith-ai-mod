@@ -347,6 +347,75 @@ test("a newer chat still stops a turn after its first action", async () => {
   } finally { release(); }
 });
 
+test("a search the model asks for before acting runs at once, without asking the model again", async () => {
+  const desktop = new FakeDesktop();
+  const withTools: boolean[] = [];
+  respond = async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+    if (path === "/api/ps") return Response.json({ models: [] });
+    const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
+    withTools.push(body.tools !== undefined);
+    const answered = /Resultados de tu búsqueda/.test(body.messages.at(-1)!.content);
+    return Response.json({ message: { content: answered ? "[feliz] Hoy hay 19 grados en Lima." : "[buscar: clima en Lima]" } });
+  };
+  const { brain, sent, config } = await setup("search-before-acting", { desktop: { available: true, desktop } });
+  await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "search-first" }, features: { computerControl: "auto", learnFacts: false }, search: { mode: "firecrawl", apiKey: "fc-secret-key-123456" } });
+  const realFetch = globalThis.fetch;
+  const searches: string[] = [];
+  const spy = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).startsWith("https://api.firecrawl.dev/")) return realFetch(input, init);
+    searches.push((JSON.parse(String(init?.body)) as { query: string }).query);
+    return Response.json({ success: true, data: { web: [{ title: "Lima weather", url: "https://www.bbc.com/weather/lima", description: "19 °C, cloudy" }] } });
+  }) as typeof fetch);
+  try {
+    expect(await brain.chat("¿cómo está el clima?", "game")).toMatchObject({ ok: true, text: "Hoy hay 19 grados en Lima." });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(withTools).toEqual([true, false]);
+  expect(searches).toEqual(["clima en Lima"]);
+  expect(desktop.actions).toHaveLength(0);
+  expect(sent).toContainEqual(expect.objectContaining({ type: "chatStatus", text: "Buscando en internet: clima en Lima…" }));
+});
+
+test("a new message stops a search the PC turn is waiting on", async () => {
+  const desktop = new FakeDesktop();
+  respond = async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
+    if (path === "/api/ps") return Response.json({ models: [] });
+    const body = await request.json() as { messages: Array<{ role: string; content: string }> };
+    if (latestWords(body.messages) === "hola") return Response.json({ message: { content: "Aquí sigo." } });
+    return Response.json({ message: body.messages.some((message) => message.role === "tool")
+      ? { content: "[buscar: clima en Lima]" }
+      : { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Notepad" } } }] } });
+  };
+  const { brain, config } = await setup("search-abort", { desktop: { available: true, desktop } });
+  await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "search-abort" }, features: { computerControl: "auto", learnFacts: false }, search: { mode: "firecrawl", apiKey: "fc-secret-key-123456" } });
+  const realFetch = globalThis.fetch;
+  let searching = () => {};
+  const reached = new Promise<void>((resolve) => { searching = resolve; });
+  let aborted = false;
+  const spy = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).startsWith("https://api.firecrawl.dev/")) return realFetch(input, init);
+    searching();
+    const signal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => signal?.addEventListener("abort", () => { aborted = true; reject(signal.reason); }));
+  }) as typeof fetch);
+  try {
+    const first = brain.chat("Abre Notepad y dime el clima", "game");
+    await reached;
+    const second = brain.chat("hola", "game");
+    expect(await first).toMatchObject({ ok: true, text: "Está bien, me detengo." });
+    expect(aborted).toBe(true);
+    expect(await second).toMatchObject({ ok: true, text: "Aquí sigo." });
+    expect(desktop.actions).toEqual([{ type: "openApp", name: "Notepad" }]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 test("a tool rejection after desktop actions reports failure without restarting as plain chat", async () => {
   const desktop = new FakeDesktop();
   let plainCalls = 0;

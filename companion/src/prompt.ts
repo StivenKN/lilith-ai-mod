@@ -12,10 +12,11 @@ import esPersona from "../persona/es.md" with { type: "text" };
 import enPersona from "../persona/en.md" with { type: "text" };
 import type { Keepsake } from "./keepsakes.ts";
 import { languages, type Language } from "./languages.ts";
+import type { Facet } from "./lookup/facets.ts";
+import type { Found } from "./lookup/shelf.ts";
 import { relevantNotes, type StoredTurn } from "./memory.ts";
 import { splitSentences } from "./reply.ts";
 import type { GameState } from "./protocol.ts";
-import type { SearchResult } from "./search.ts";
 
 export const defaultPersona = (language: Language): string => (language === "es" ? esPersona : enPersona).trim();
 
@@ -33,19 +34,14 @@ export interface PromptContext {
   /** Her latest replies, newest last, to steer her out of a pattern she's stuck in. */
   recentReplies?: readonly string[];
   maxChars: number;
-  /** "available": she may ask for a search; otherwise what a search she asked for returned. */
-  search?: SearchContext;
+  /** What she may look up this turn, for the rules lines. */
+  facets?: readonly Facet[];
   /**
    * Tools for using the PC are offered this turn; the coordinate system lives in the tools
    * themselves. `browser`: the extension is connected, so webpages go through the browser tool.
    */
   computer?: { vision: boolean; browser: boolean };
 }
-
-export type SearchContext =
-  | { kind: "available" }
-  | { kind: "results"; query: string; results: readonly SearchResult[] }
-  | { kind: "failed"; query: string };
 
 const localeTag = (language: Language): string => (language === "es" ? "es-419" : language);
 
@@ -140,7 +136,7 @@ export function buildSystemPrompt(context: PromptContext): string {
       "- No escribas tu nombre antes de la respuesta. Háblale de tú a tu anfitrión y nunca le digas «anfitrión».",
       "- Responde al último mensaje de tu anfitrión. No repitas una frase ni una pregunta que ya dijiste.",
     );
-    if (context.search) {
+    if (context.facets?.includes("web")) {
       lines.push(
         "- Puedes buscar en internet. Si necesitas información actual o que no sabes con certeza (noticias, clima, precios, resultados, fechas de estreno, datos concretos), responde solo con [buscar: consulta breve] y nada más. Recibirás los resultados y luego responderás. No busques para charla normal.",
       );
@@ -158,7 +154,7 @@ export function buildSystemPrompt(context: PromptContext): string {
       "- Don't write your name before the reply. Talk to your host as \"you\", never as \"host\".",
       "- Answer your host's last message. Don't repeat a sentence or a question you already said.",
     );
-    if (context.search) {
+    if (context.facets?.includes("web")) {
       lines.push(
         "- You can search the internet. If you need current information or something you don't know for sure (news, weather, prices, scores, release dates, specific facts), reply only with [search: short query] and nothing else. You will get the results, then you reply. Don't search for normal small talk.",
       );
@@ -217,7 +213,7 @@ export function buildSystemPrompt(context: PromptContext): string {
  * now and, after a search, what it found. It changes every turn, so it stays out of the cached
  * part of the prompt.
  */
-export function withTurnNote(context: PromptContext, message: string): string {
+export function withTurnNote(context: PromptContext, message: string, found?: Found): string {
   const es = context.language === "es";
   const lines = [es ? "[Contexto de este momento, úsalo con naturalidad y no lo recites:" : "[Context for this moment; use it naturally, don't recite it:", ...nowLines(context, es)];
   // Small models end every reply with a question once they've done it twice; this note sits where
@@ -228,7 +224,7 @@ export function withTurnNote(context: PromptContext, message: string): string {
   }
   const relevant = relevantNotes(context.notes, message);
   if (relevant.length > 0) lines.push(`- ${es ? "De tus notas, puede venir al caso" : "From your notes, this may matter"}: ${relevant.join("; ")}.`);
-  if (context.search && context.search.kind !== "available") lines.push(describeSearch(context.search, es));
+  if (found) lines.push(describeFound(found, es));
   // Told only in the system prompt, a 4B model answered every PC request with a question, or said
   // it was done, without calling a tool. Right before the message, it acts.
   if (context.computer) {
@@ -239,16 +235,16 @@ export function withTurnNote(context: PromptContext, message: string): string {
   return `${lines.join("\n")}]\n\n${message}`;
 }
 
-function describeSearch(search: Exclude<SearchContext, { kind: "available" }>, es: boolean): string {
-  if (search.kind === "failed" || search.results.length === 0) {
+function describeFound(found: Found, es: boolean): string {
+  if (found.kind === "failed" || found.results.length === 0) {
     return es
-      ? `Buscaste en internet "${search.query}" pero no obtuviste resultados. Sin volver a buscar, dilo con naturalidad y responde con lo que sabes, sin inventar datos.`
-      : `You searched the internet for "${search.query}" but got no results. Without searching again, say so naturally and answer with what you know, without making up facts.`;
+      ? `Buscaste en internet "${found.query}" pero no obtuviste resultados. Sin volver a buscar, dilo con naturalidad y responde con lo que sabes, sin inventar datos.`
+      : `You searched the internet for "${found.query}" but got no results. Without searching again, say so naturally and answer with what you know, without making up facts.`;
   }
   const header = es
-    ? `Resultados de tu búsqueda en internet "${search.query}". Responde ahora con ellos, sin volver a buscar, con tus palabras y en tu formato; no leas direcciones web ni digas que eres un buscador:`
-    : `Results of your internet search for "${search.query}". Answer with them now, without searching again, in your own words and format; don't read out web addresses or act like a search engine:`;
-  const items = search.results.map((result, index) => {
+    ? `Resultados de tu búsqueda en internet "${found.query}". Responde ahora con ellos, sin volver a buscar, con tus palabras y en tu formato; no leas direcciones web ni digas que eres un buscador:`
+    : `Results of your internet search for "${found.query}". Answer with them now, without searching again, in your own words and format; don't read out web addresses or act like a search engine:`;
+  const items = found.results.map((result, index) => {
     let host = result.url;
     try {
       host = new URL(result.url).hostname.replace(/^www\./, "");
