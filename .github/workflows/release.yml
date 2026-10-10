@@ -43,6 +43,16 @@ jobs:
           pnpm typecheck
           bun test
 
+      - name: Warn when the Google client is missing from the repository secrets
+        env:
+          LILITH_GOOGLE_CLIENT_ID: ${{ secrets.LILITH_GOOGLE_CLIENT_ID }}
+          LILITH_GOOGLE_CLIENT_SECRET: ${{ secrets.LILITH_GOOGLE_CLIENT_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$LILITH_GOOGLE_CLIENT_ID" ] || [ -z "$LILITH_GOOGLE_CLIENT_SECRET" ]; then
+            echo "::warning title=Google sign-in missing::LILITH_GOOGLE_CLIENT_ID and LILITH_GOOGLE_CLIENT_SECRET are not both set in the repository secrets, so this release ships without Google sign-in. See docs/GOOGLE.md."
+          fi
+
       - name: Build LilithAICompanion.exe
         # The mod's Google OAuth client (docs/GOOGLE.md). Only the release carries it; CI tests use a mock Google.
         env:

@@ -30,6 +30,9 @@ if (!host) args.push("--target=bun-windows-x64");
 const client = { id: process.env.LILITH_GOOGLE_CLIENT_ID, secret: process.env.LILITH_GOOGLE_CLIENT_SECRET };
 if (client.id && client.secret) {
   args.push("--define", `process.env.LILITH_GOOGLE_CLIENT_ID:${JSON.stringify(client.id)}`, "--define", `process.env.LILITH_GOOGLE_CLIENT_SECRET:${JSON.stringify(client.secret)}`);
+  // With the client baked in, the endpoint override for the mock Google is dead code: a release must
+  // not be pointable at a plain-http host that would receive its client secret and refresh tokens.
+  args.push("--define", `process.env.LILITH_AI_GOOGLE_URL:${JSON.stringify("")}`);
 } else {
   console.log("LILITH_GOOGLE_CLIENT_ID / LILITH_GOOGLE_CLIENT_SECRET not set: building without Google sign-in");
 }
