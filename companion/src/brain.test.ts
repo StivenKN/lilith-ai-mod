@@ -152,11 +152,13 @@ describe("Connected accounts", () => {
     search: async (query) => (query.words.includes("laura") ? [{ title: "Fotos del viaje", meta: "Laura Pérez, 2026-10-08 10:00", excerpt: "te mando las fotos del viaje", at: 1, read: async () => "Hola Alex, te mando las fotos del viaje a Cartagena." }] : []),
   };
   const accounts: BrainOptions["accounts"] = { sources: (gate) => (gate.origin === "player" ? [laura] : []) };
+  /** Like Ollama: a model without the tools capability answers a tools request with a 400. */
   const ollama = (name: string, capabilities: string[]) => async (request: Request) => {
     const path = new URL(request.url).pathname;
     if (path === "/api/show") return Response.json({ capabilities });
     if (path === "/api/ps") return Response.json({ models: [] });
     const body = (await request.json()) as Body;
+    if (body.tools && !capabilities.includes("tools")) return Response.json({ error: `registry.ollama.ai/library/${name} does not support tools` }, { status: 400 });
     return Response.json({ model: name, message: body.tools
       ? { content: "", tool_calls: [{ function: { name: "email", arguments: { query: "laura" } } }] }
       : { content: "Laura te mandó las fotos del viaje. [feliz]" }, done_reason: "stop" });
@@ -190,20 +192,59 @@ describe("Connected accounts", () => {
     expect(memory.history.map((turn) => [turn.role, turn.consulted])).toEqual([["user", true], ["assistant", true]]);
   });
 
-  test("a model without tools gets no private facet, and the prompt is the one a player without accounts gets", async () => {
+  test("a model without tools gets no private facet after one rejected offer, and the prompt is the one a player without accounts gets", async () => {
     respond = ollama("mail-plain", []);
     const { brain, config } = await setup("mail-no-tools", { accounts });
     await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "mail-plain" }, features: { learnFacts: false }, search: { mode: "local" } });
     expect(await brain.chat("¿qué me escribió Laura?", "game")).toMatchObject({ ok: true, text: "Laura te mandó las fotos del viaje." });
-    const withAccounts = chats().map((body) => body.messages[0]!.content);
-    expect(chats()).toHaveLength(1);
-    expect(chats()[0]!.tools).toBeUndefined();
+    expect(chats().map((body) => toolNames(body))).toEqual([["web_search", "email"], undefined]);
+    const withAccounts = chats()[1]!.messages[0]!.content;
     const other = await setup("mail-none", {});
     await other.config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "mail-plain" }, features: { learnFacts: false }, search: { mode: "local" } });
     await other.brain.chat("¿qué me escribió Laura?", "game");
-    expect(chats()[0]!.messages[0]!.content).toBe(withAccounts[0]!);
-    expect(withAccounts[0]).toContain("[buscar: consulta breve]");
+    expect(chats()[0]!.messages[0]!.content).toBe(withAccounts);
+    expect(withAccounts).toContain("[buscar: consulta breve]");
     expect(other.memory.history.some((turn) => turn.consulted)).toBe(false);
+  });
+
+  test("her accounts are offered straight away: no vision probe to learn about tools, and the gate is asked once per turn", async () => {
+    let probes = 0;
+    respond = async (request) => {
+      const body = (await request.json()) as { tools?: unknown; messages: Array<{ content: unknown }> };
+      if (Array.isArray(body.messages.at(-1)?.content)) {
+        probes++;
+        return reply("ok");
+      }
+      if (body.tools) return Response.json({ choices: [{ finish_reason: "tool_calls", message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "email", arguments: JSON.stringify({ query: "laura" }) } }] } }] });
+      return reply("[feliz] Laura te mandó las fotos del viaje.");
+    };
+    let gated = 0;
+    const counted: BrainOptions["accounts"] = { sources: (gate) => { gated++; return accounts.sources(gate); } };
+    const { brain, config } = await setup("mail-no-probe", { accounts: counted });
+    await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-lookup", configured: true }, features: { learnFacts: false } });
+    expect(await brain.chat("¿qué me escribió Laura?", "game")).toMatchObject({ ok: true, text: "Laura te mandó las fotos del viaje." });
+    expect(probes).toBe(0);
+    expect(gated).toBe(1);
+    expect(chats().map((body) => toolNames(body))).toEqual([["email"], undefined]);
+  });
+
+  test("a model that rejects the lookup tools answers without her accounts, from the sources already gathered", async () => {
+    respond = async (request) => {
+      const body = (await request.json()) as { tools?: unknown };
+      if (body.tools) return Response.json({ error: { message: "This model does not support tools" } }, { status: 400 });
+      return reply("[neutral] Solo puedo conversar.");
+    };
+    let gated = 0;
+    const counted: BrainOptions["accounts"] = { sources: (gate) => { gated++; return accounts.sources(gate); } };
+    const { brain, config } = await setup("mail-rejects", { accounts: counted });
+    await config.update({ provider: { preset: "openai", baseUrl: `http://127.0.0.1:${server.port}/v1`, model: "gpt-rejects", configured: true }, features: { learnFacts: false }, search: { mode: "local" } });
+    expect(await brain.chat("¿qué me escribió Laura?", "game")).toMatchObject({ ok: true, text: "Solo puedo conversar." });
+    expect(gated).toBe(1);
+    const [first, second] = chats();
+    expect(toolNames(first!)).toEqual(["web_search", "email"]);
+    expect(second!.tools).toBeUndefined();
+    expect(second!.messages[0]!.content).toContain("[buscar: consulta breve]");
+    expect(second!.messages[0]!.content).not.toContain("con email");
   });
 
   test("with the PC on, a lookup asked before acting is answered through chat with no second decision", async () => {

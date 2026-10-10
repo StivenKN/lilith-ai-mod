@@ -8,7 +8,7 @@ const log = new Logger(null).scope("test");
 const off = { mode: "off" as const, apiKey: "" };
 const firecrawl = { mode: "firecrawl" as const, apiKey: "fc-test-key-123456" };
 const player: Gate = { origin: "player", audience: "local" };
-const none = { sources: () => [] };
+const none: Source[] = [];
 
 /** A mail account that answers every query with the same hits, or throws. */
 const mailbox = (label: string, hits: Hit[] | Error): Source => ({
@@ -21,9 +21,9 @@ const call = (name: string, input: unknown, error?: string) => ({ id: "c1", name
 
 describe("openShelf", () => {
   test("offers the web only when search is usable, and reads the tag the model wrote", () => {
-    expect(openShelf({ gate: player, tools: false, search: off, accounts: none, log }).facets).toEqual([]);
-    expect(openShelf({ gate: player, tools: false, search: { ...firecrawl, apiKey: "" }, accounts: none, log }).facets).toEqual([]);
-    const shelf = openShelf({ gate: player, tools: false, search: firecrawl, accounts: none, log });
+    expect(openShelf({ gate: player, tools: false, search: off, sources: none, log }).facets).toEqual([]);
+    expect(openShelf({ gate: player, tools: false, search: { ...firecrawl, apiKey: "" }, sources: none, log }).facets).toEqual([]);
+    const shelf = openShelf({ gate: player, tools: false, search: firecrawl, sources: none, log });
     expect(shelf.facets).toEqual(["web"]);
     expect(shelf.tools).toEqual([]);
     for (const [reply, query] of [
@@ -32,23 +32,22 @@ describe("openShelf", () => {
       ['<think>maybe [search: no]</think> [Search: "new Zelda release date"]', "new Zelda release date"],
       ["[happy] Of course!", null],
     ] as const) expect(shelf.requestIn({ text: reply })?.query ?? null).toBe(query);
-    expect(openShelf({ gate: player, tools: false, search: off, accounts: none, log }).requestIn({ text: "[search: anything]" })).toBeNull();
+    expect(openShelf({ gate: player, tools: false, search: off, sources: none, log }).requestIn({ text: "[search: anything]" })).toBeNull();
   });
 
-  test("a private facet is offered as a tool, and takes the web with it, only when the model takes tools and the gate lets the account through", () => {
-    const accounts = { sources: (gate: Gate) => (gate.origin === "player" ? [mailbox("alex@gmail.com", [])] : []) };
-    const shelf = openShelf({ gate: player, tools: true, search: firecrawl, accounts, log });
+  test("a private facet is offered as a tool, and takes the web with it, only when the model takes tools; without them the same shelf keeps the web tag", () => {
+    const sources = [mailbox("alex@gmail.com", [])];
+    const shelf = openShelf({ gate: player, tools: true, search: firecrawl, sources, log });
     expect(shelf.facets).toEqual(["web", "mail"]);
     expect(shelf.tools.map((tool) => tool.name)).toEqual(["web_search", "email"]);
-    expect(openShelf({ gate: player, tools: false, search: firecrawl, accounts, log })).toMatchObject({ facets: ["web"], tools: [] });
-    expect(openShelf({ gate: { origin: "autonomous", audience: "local" }, tools: true, search: firecrawl, accounts, log })).toMatchObject({ facets: ["web"], tools: [] });
-    expect(openShelf({ gate: player, tools: true, search: off, accounts, log })).toMatchObject({ facets: ["mail"] });
-    expect(openShelf({ gate: player, tools: true, search: off, accounts, log }).tools.map((tool) => tool.name)).toEqual(["email"]);
+    expect(shelf.withoutTools()).toMatchObject({ facets: ["web"], tools: [] });
+    expect(openShelf({ gate: player, tools: true, search: off, sources, log })).toMatchObject({ facets: ["mail"] });
+    expect(openShelf({ gate: player, tools: true, search: off, sources, log }).tools.map((tool) => tool.name)).toEqual(["email"]);
   });
 
   test("with tools offered, the request comes from a lookup call; a malformed one or a PC tool is not a lookup", () => {
-    const accounts = { sources: () => [mailbox("alex@gmail.com", [])] };
-    const shelf = openShelf({ gate: player, tools: true, search: firecrawl, accounts, log });
+    const sources = [mailbox("alex@gmail.com", [])];
+    const shelf = openShelf({ gate: player, tools: true, search: firecrawl, sources, log });
     expect(shelf.requestIn({ text: "", calls: [call("email", { query: " laura " })] })).toMatchObject({ facet: "mail", query: "laura" });
     expect(shelf.requestIn({ text: "", calls: [call("web_search", { query: "clima en Lima" })] })).toMatchObject({ facet: "web", query: "clima en Lima" });
     expect(shelf.requestIn({ text: "", calls: [call("email", { q: "laura" })] })).toBeNull();
@@ -56,7 +55,7 @@ describe("openShelf", () => {
     expect(shelf.requestIn({ text: "", calls: [call("open_app", { name: "Notepad" })] })).toBeNull();
     expect(shelf.requestIn({ text: "[buscar: clima en Lima]", calls: [] })).toMatchObject({ facet: "web" });
     // Without tools, a call named like a lookup tool is nobody's request.
-    expect(openShelf({ gate: player, tools: false, search: firecrawl, accounts, log }).requestIn({ text: "", calls: [call("email", { query: "laura" })] })).toBeNull();
+    expect(shelf.withoutTools().requestIn({ text: "", calls: [call("email", { query: "laura" })] })).toBeNull();
   });
 
   test("stripLookupTags leaves the rest of the reply", () => {
@@ -64,7 +63,7 @@ describe("openShelf", () => {
   });
 
   test("look searches under the turn's signal; a failure or an abort comes back as failed, never thrown", async () => {
-    const shelf = openShelf({ gate: player, tools: false, search: firecrawl, accounts: none, log });
+    const shelf = openShelf({ gate: player, tools: false, search: firecrawl, sources: none, log });
     const request = shelf.requestIn({ text: "[search: weather in Lima]" })!;
     const realFetch = globalThis.fetch;
     const signals: AbortSignal[] = [];
@@ -97,8 +96,7 @@ describe("openShelf", () => {
   });
 
   test("a lookup in her accounts comes back as one section the prompt can describe", async () => {
-    const accounts = { sources: () => [mailbox("alex@gmail.com", [hit("Fotos del viaje", 2)])] };
-    const shelf = openShelf({ gate: player, tools: true, search: off, accounts, log });
+    const shelf = openShelf({ gate: player, tools: true, search: off, sources: [mailbox("alex@gmail.com", [hit("Fotos del viaje", 2)])], log });
     const request = shelf.requestIn({ text: "", calls: [call("email", { query: "laura" })] })!;
     expect(await shelf.look(request, "¿qué me escribió Laura?")).toEqual({
       kind: "consulted", query: "laura",

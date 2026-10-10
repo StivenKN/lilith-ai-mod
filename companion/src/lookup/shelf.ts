@@ -4,7 +4,6 @@
 // parsing, the fan-out across accounts, timeouts, budgets, retries and failure capture.
 
 import { z } from "zod";
-import type { AccountStore } from "../accounts/store.ts";
 import { errorMessage, type Log } from "../log.ts";
 import type { ChatResult, ToolCall, ToolSpec } from "../providers/types.ts";
 import { createSearcher, type SearchResult, type SearchSettings } from "../search.ts";
@@ -45,6 +44,8 @@ export interface Shelf {
   requestIn(step: Pick<ChatResult, "text"> & { calls?: readonly ToolCall[] }): LookupRequest | null;
   /** Runs the lookup under the turn's signal. Never throws: a failure comes back as `failed` or as a named problem. */
   look(request: LookupRequest, said: string, signal?: AbortSignal): Promise<Found>;
+  /** The same shelf for a model that rejected the tools: the web keeps its tag, and her accounts stay closed this turn. */
+  withoutTools(): Shelf;
 }
 
 /** How much of what she found fits in the note: a 4B on an 8k context reads less than an online model. */
@@ -83,18 +84,20 @@ function tagQuery(text: string): string | null {
   return TAG.exec(cleaned)?.[1]?.trim().replace(/^["“«]|["”»]$/g, "") || null;
 }
 
-const closed: Shelf = { facets: [], tools: [], requestIn: () => null, look: async ({ query }) => ({ kind: "failed", query }) };
+const closed: Shelf = { facets: [], tools: [], requestIn: () => null, look: async ({ query }) => ({ kind: "failed", query }), withoutTools: () => closed };
 
-export function openShelf({ gate, tools, search, accounts, log }: {
+export function openShelf(options: {
   gate: Gate;
-  /** capabilities().tools. False keeps today's web tag and offers no private facet (P-SURFACE run 4). */
+  /** Whether the model takes tools. False keeps today's web tag and offers no private facet (P-SURFACE run 4). */
   tools: boolean;
   search: SearchSettings;
-  accounts: Pick<AccountStore, "sources">;
+  /** What the gate let through for this turn (`AccountStore.sources`), gathered once per turn. */
+  sources: readonly Source[];
   log: Log;
 }): Shelf {
+  const { gate, tools, search, log } = options;
   const searcher = createSearcher(search);
-  const sources = tools ? accounts.sources(gate) : [];
+  const sources = tools ? options.sources : [];
   const privates = privateFacets.filter((facet) => sources.some((source) => source.facet === facet));
   const offeredFacets: Facet[] = [...(searcher ? ["web" as const] : []), ...privates];
   if (offeredFacets.length === 0) return closed;
@@ -131,6 +134,7 @@ export function openShelf({ gate, tools, search, accounts, log }: {
       const section = await consult({ sources: sources.filter((source) => source.facet === request.facet), facet: request.facet, query: request.query, said, budget: LOOKUP_BUDGET[gate.audience], log, ...(signal ? { signal } : {}) });
       return { kind: "consulted", query: request.query, sections: [section] };
     },
+    withoutTools: () => openShelf({ ...options, tools: false }),
   };
 }
 

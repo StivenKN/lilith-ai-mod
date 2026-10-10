@@ -72,8 +72,6 @@ const AUTO_CARD_RETRY_MS = 3600_000;
 const PENDING_CARD_MAX_AGE_MS = 7 * 24 * 3600_000;
 /** Without a store (tests, the provider test), she has no accounts to look in. */
 const NO_ACCOUNTS: Pick<AccountStore, "sources"> = { sources: () => [] };
-/** A shelf for this turn's gate, opened with or without tool support as it becomes known. */
-type Shelves = (tools: boolean) => Shelf;
 
 export type TurnFailure = { kind: ErrorKind | "internal"; message: string; detail: string };
 export type TurnResult =
@@ -374,10 +372,10 @@ export class Brain {
     try {
       const provider = createProvider(settings, (message) => this.#log.warn(message));
       // A check is nobody's turn: it may search the web, never the player's accounts.
-      const shelves = this.#shelves({ origin: "autonomous", audience: audienceOf(settings) });
+      const shelf = this.#openShelf({ origin: "autonomous", audience: audienceOf(settings) });
       const { text, emotion, model } = await this.#ask(provider, settings, language, [
         { role: "user", content: language === "es" ? "Hola, Lilith. ¿Me escuchas?" : "Hi Lilith. Can you hear me?" },
-      ], shelves);
+      ], shelf);
       return { ok: true, text, emotion, model, latencyMs: Math.round(performance.now() - started) };
     } catch (error) {
       const failure = this.#describe(error, settings);
@@ -421,12 +419,12 @@ export class Brain {
       };
       const budget = contextBudget(isLocalProvider(settings));
       const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget), { role: "user", content: userTurn }];
-      const shelves = this.#shelves({ origin: originOf[input.source], audience: audienceOf(settings) });
+      const shelf = this.#openShelf({ origin: originOf[input.source], audience: audienceOf(settings) });
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
       const { text, emotion, model, consulted } = useComputer
-        ? await this.#askComputer(provider, settings, language, turns, shelves, desktop, () => clearInterval(escalation), onLookup, input.computerEpoch)
-        : await this.#ask(provider, settings, language, turns, shelves, { onLookup, tools: await this.#lookupToolsSupported(provider, settings, shelves) });
+        ? await this.#askComputer(provider, settings, language, turns, shelf, desktop, () => clearInterval(escalation), onLookup, input.computerEpoch)
+        : await this.#ask(provider, settings, language, turns, shelf, { onLookup });
       const latencyMs = Math.round(performance.now() - started);
       const stored = await this.options.memory.addExchange(input.user, text, input.source, consulted);
       if (!stored) this.#log.info("reply was still a near-repeat; shown, but kept out of her context");
@@ -478,7 +476,7 @@ export class Brain {
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
-    shelves: Shelves,
+    shelf: Shelf,
     status: Extract<DesktopStatus, { available: true }>,
     actionsStarted: () => void,
     onLookup: (request: LookupRequest) => void,
@@ -488,7 +486,7 @@ export class Brain {
     const tr = translator(this.uiLocale());
     const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: false });
     if (this.#stopped) return stopped();
-    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelves, { onLookup });
+    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelf, { onLookup });
     const controller = new AbortController();
     this.#computerAbort = controller;
     this.#computerActed = false;
@@ -496,11 +494,10 @@ export class Brain {
     this.#computerDone = new Promise<void>((resolve) => { done = resolve; });
     let acted = false;
     let fellBack = false;
-    // Whether the model takes tools, once known: the fallback chat then still offers her accounts.
-    let tools = false;
-    const fallback = async (asked: LookupRequest | null = null) => {
+    // Ordinary chat instead, on this turn's shelf unless the model is known to reject tools.
+    const fallback = async (asked: LookupRequest | null = null, open = shelf) => {
       fellBack = true;
-      try { return await this.#ask(provider, settings, language, turns, shelves, { onLookup, signal: controller.signal, asked, tools }); }
+      try { return await this.#ask(provider, settings, language, turns, open, { onLookup, signal: controller.signal, asked }); }
       catch (error) { if (controller.signal.aborted) return stopped(); throw error; }
     };
     try {
@@ -509,9 +506,7 @@ export class Brain {
       controller.signal.throwIfAborted();
       if (config === this.options.config.current) this.#computerCapabilities = capabilities;
       if (epoch !== this.#computerEpoch) return await fallback();
-      if (!capabilities.tools) return await fallback();
-      tools = true;
-      const shelf = shelves(true);
+      if (!capabilities.tools) return await fallback(null, shelf.withoutTools());
       const link = this.options.browser?.current();
       const browser = link ? new BrowserSession(link, { vision: capabilities.vision }) : undefined;
       const context: PromptContext = { ...this.#promptContext(language, shelf.facets), computer: { vision: capabilities.vision, browser: !!browser } };
@@ -579,7 +574,7 @@ export class Brain {
       // After actions, a fresh chat would lose their results and could claim success.
       if (!acted && !fellBack && error instanceof ProviderError && !["auth", "billing", "rate_limit", "unreachable", "timeout", "refused", "empty_reply"].includes(error.kind)) {
         this.#log.warn(`computer request failed before actions; using ordinary chat: ${error.message}`);
-        return await fallback();
+        return await fallback(null, error.kind === "no_tools" ? shelf.withoutTools() : shelf);
       }
       throw error;
     } finally {
@@ -612,40 +607,40 @@ export class Brain {
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
-    shelves: Shelves,
-    { onLookup = () => {}, signal, asked = null, tools = false }: { onLookup?: (request: LookupRequest) => void; signal?: AbortSignal; asked?: LookupRequest | null; tools?: boolean } = {},
+    shelf: Shelf,
+    { onLookup = () => {}, signal, asked = null }: { onLookup?: (request: LookupRequest) => void; signal?: AbortSignal; asked?: LookupRequest | null } = {},
   ) {
     const config = this.options.config.current;
     const http = { timeoutMs: await this.#timeoutFor(settings), ...(signal ? { signal } : {}) };
-    let shelf = shelves(tools);
-    let context = this.#promptContext(language, shelf.facets);
+    let open = shelf;
+    let context = this.#promptContext(language, open.facets);
     const requestFor = (context: PromptContext, found?: Found): ChatRequest => ({ system: buildSystemPrompt(context), turns: withNote(turns, context, found), maxTokens: MAX_TOKENS, temperature: config.advanced.temperature, ...http });
     let request = requestFor(context);
 
     let result: ChatResult | undefined;
     let lookup = asked;
-    if (!lookup && shelf.tools.length > 0) {
+    if (!lookup && open.tools.length > 0) {
       // The first step offers only the lookup tools. A call ends it; the answer comes from a chat without tools.
       try {
-        const step = await provider.agent({ ...request, tools: shelf.tools, vision: false }).next([], http);
+        const step = await provider.agent({ ...request, tools: open.tools, vision: false }).next([], http);
         result = { text: step.text, reasoning: "", finish: step.finish, model: step.model };
-        lookup = shelf.requestIn(step);
+        lookup = open.requestIn(step);
       } catch (error) {
         if (!(error instanceof ProviderError && error.kind === "no_tools")) throw error;
-        // The capability check was wrong about this model: her accounts stay closed this turn, and the check learns.
+        // No probe asked the model first: a rejection here is how she learns, and her accounts stay closed this turn.
         this.#log.warn(`${settings.model} rejected the lookup tools; answering without her accounts`);
-        shelf = shelves(false);
-        context = this.#promptContext(language, shelf.facets);
+        open = open.withoutTools();
+        context = this.#promptContext(language, open.facets);
         request = requestFor(context);
       }
     }
     if (!lookup && !result) {
       result = await provider.chat(request);
-      lookup = shelf.requestIn(result);
+      lookup = open.requestIn(result);
     }
     if (lookup) {
       onLookup(lookup);
-      const found = await shelf.look(lookup, turns.at(-1)?.content ?? "", signal);
+      const found = await open.look(lookup, turns.at(-1)?.content ?? "", signal);
       request = requestFor(context, found);
       result = await provider.chat(request);
     }
@@ -671,26 +666,14 @@ export class Brain {
     return { text: reply.text, emotion: reply.emotion, model, consulted: lookup !== null && isPrivate(lookup.facet) };
   }
 
-  #shelves(gate: Gate): Shelves {
-    const { config, accounts = NO_ACCOUNTS } = this.options;
-    return (tools) => openShelf({ gate, tools, search: config.current.search, accounts, log: this.#log });
-  }
-
   /**
-   * Whether to offer her accounts as tools on an ordinary chat turn. The model is only asked when
-   * an account passes this turn's gate, so players without one pay nothing new.
+   * One shelf per turn: the gate is asked once, and the tools are offered without probing the
+   * model first (a probe costs an image request on online providers). A model that rejects them
+   * gets the same shelf without, so players without an account pay nothing new.
    */
-  async #lookupToolsSupported(provider: Provider, settings: ProviderSettings, shelves: Shelves): Promise<boolean> {
-    if (!shelves(true).facets.some(isPrivate)) return false;
-    const config = this.options.config.current;
-    try {
-      const capabilities = await provider.capabilities({ timeoutMs: Math.min(180_000, await this.#timeoutFor(settings)) });
-      if (config === this.options.config.current) this.#computerCapabilities = capabilities;
-      return capabilities.tools;
-    } catch (error) {
-      this.#log.warn(`could not check whether ${settings.model} takes tools; answering without her accounts: ${errorMessage(error)}`);
-      return false;
-    }
+  #openShelf(gate: Gate): Shelf {
+    const { config, accounts = NO_ACCOUNTS } = this.options;
+    return openShelf({ gate, tools: true, search: config.current.search, sources: accounts.sources(gate), log: this.#log });
   }
 
   #lookupStatus(request: LookupRequest, tr: Translate): string {
