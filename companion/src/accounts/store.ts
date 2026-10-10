@@ -15,7 +15,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { readTextFile, writeAtomic } from "../config.ts";
+import { parseJson, readTextFile, writeAtomic } from "../config.ts";
 import { errorMessage, type Log } from "../log.ts";
 import { isFacet, isPrivate, type PrivateFacet } from "../lookup/facets.ts";
 import { mayConsult, type Gate, type Policy } from "../lookup/gate.ts";
@@ -48,14 +48,6 @@ const AccountFile = Listing.extend({
   status: z.enum(["ok", "reconnect"]),
 });
 type AccountFile = z.infer<typeof AccountFile>;
-
-const parseJson = (text: string): unknown => {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-};
 
 /** What leaves the store: no credential field, so nothing to forget to mask. */
 export interface AccountView {
@@ -133,22 +125,23 @@ export class AccountStore {
       if (!stray) continue;
       const [, id = "", kind, temp] = stray;
       if (!temp && (kind === "json" || names.includes(`${id}.json`))) continue;
-      const path = join(this.dir, name);
-      const modified = await stat(path).then((info) => info.mtimeMs, () => Date.now());
-      if (Date.now() - modified < STRAY_MIN_AGE_MS) continue;
-      if (kind === "secret") await this.#revokeStray(id, await readTextFile(path).catch(() => null));
-      await rm(path, { force: true });
-      this.log.info(`removed stray account file ${name}`);
+      await this.#removeStray(name, kind === "secret" ? id : null).catch((error: unknown) => this.log.warn(`could not remove stray account file ${name}: ${errorMessage(error)}`));
     }
   }
 
-  /** The connector is known from the id's catalog entry: a "google-…" secret is a Google credential. */
-  async #revokeStray(id: string, text: string | null): Promise<void> {
-    const connectorId = catalogEntry(id.replace(/-[0-9a-f]+$/, ""))?.connector;
-    if (!connectorId || text === null) return;
-    const connector = connectors[connectorId];
-    const secret = connector.secret.safeParse(parseJson(text));
-    if (secret.success) await connector.revoke(secret.data, AbortSignal.timeout(REVOKE_TIMEOUT_MS)).catch(() => {});
+  /** Revokes the credential a stray secret holds, best effort, then removes the file. The connector is known from the id's catalog entry: a "google-…" secret is a Google credential. */
+  async #removeStray(name: string, secretOf: string | null): Promise<void> {
+    const path = join(this.dir, name);
+    const modified = await stat(path).then((info) => info.mtimeMs, () => null);
+    if (modified === null || Date.now() - modified < STRAY_MIN_AGE_MS) return;
+    const connectorId = secretOf === null ? undefined : catalogEntry(secretOf.replace(/-[0-9a-f]+$/, ""))?.connector;
+    if (connectorId) {
+      const connector = connectors[connectorId];
+      const secret = connector.secret.safeParse(parseJson((await readTextFile(path)) ?? ""));
+      if (secret.success) await connector.revoke(secret.data, AbortSignal.timeout(REVOKE_TIMEOUT_MS)).catch(() => {});
+    }
+    await rm(path, { force: true });
+    this.log.info(`removed stray account file ${name}`);
   }
 
   list(): AccountView[] {

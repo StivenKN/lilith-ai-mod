@@ -5,6 +5,7 @@
 // so nothing past this file sees Google's JSON.
 
 import { z } from "zod";
+import { parseJson } from "../../config.ts";
 import { privateFacets, type PrivateFacet } from "../../lookup/facets.ts";
 import type { Query } from "../../lookup/query.ts";
 import { LookupError, type Hit, type Reader } from "../../lookup/sources.ts";
@@ -169,14 +170,6 @@ const parseOr = <T>(schema: z.ZodType<T>, json: unknown, what: string): T => {
   return parsed.data;
 };
 
-const jsonOf = (bytes: Uint8Array): unknown => {
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return null;
-  }
-};
-
 const ENTITIES: Record<string, string> = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
   aacute: "á", eacute: "é", iacute: "í", oacute: "ó", uacute: "ú", ntilde: "ñ", uuml: "ü",
@@ -262,7 +255,7 @@ function mailSource(account: Account, auth: Auth): Reader {
           read: async (signal) => {
             const { bytes, complete } = await readBody(await call(auth, `${base}/${encodeURIComponent(id)}?format=full`, signal), FULL_MESSAGE_MAX_BYTES);
             if (!complete) return snippet;
-            const full = parseOr(GmailFull, jsonOf(bytes), "mail body");
+            const full = parseOr(GmailFull, parseJson(new TextDecoder().decode(bytes)), "mail body");
             const plain = partText(full.payload, "text/plain");
             if (plain !== null) return plain;
             const html = partText(full.payload, "text/html");
