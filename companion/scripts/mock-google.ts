@@ -70,6 +70,8 @@ export interface MockGoogle {
   revokeRefreshTokens(): void;
   /** Every API call answers this status (a rate limit, a disabled API) until cleared with null. */
   deny(status: 401 | 403 | null): void;
+  /** Whether a refresh token is still live: false once the companion revoked it. */
+  knowsRefreshToken(token: string): boolean;
   stop(): void;
 }
 
@@ -206,6 +208,7 @@ export function startMockGoogle(port = 0): MockGoogle {
     expireTokens: () => accessTokens.clear(),
     revokeRefreshTokens: () => refreshTokens.clear(),
     deny: (status) => { denied = status; },
+    knowsRefreshToken: (token) => refreshTokens.has(token),
     stop: () => void server.stop(true),
   };
 }

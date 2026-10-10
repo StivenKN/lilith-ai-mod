@@ -12,7 +12,7 @@
 // processes yet. A rotating connector (Microsoft) will need a per-account lock around its refresh.
 
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { readTextFile, writeAtomic } from "../config.ts";
@@ -27,6 +27,8 @@ const FILE_VERSION = 1;
 /** Editors and atomic renames fire several events per save; settle first. */
 const SETTLE_MS = 150;
 const REVOKE_TIMEOUT_MS = 5_000;
+/** A stray file younger than this may belong to a connect the other companion is finishing right now. */
+const STRAY_MIN_AGE_MS = 60_000;
 
 /** Enough of any version's file to list it: a newer file still shows its name and facets. */
 const Listing = z.looseObject({
@@ -113,8 +115,40 @@ export class AccountStore {
   static async load(dir: string, log: Log, hide: (secret: string) => void): Promise<AccountStore> {
     const store = new AccountStore(dir, log, hide);
     await mkdir(dir, { recursive: true });
+    await store.#sweep();
     await store.#reloadAll();
     return store;
+  }
+
+  /**
+   * A crash between the two writes of a connect or a disconnect leaves a secret nobody lists, and
+   * an interrupted atomic write leaves a temp file. Their tokens are revoked best-effort and the
+   * files removed. Only at startup and only old files: a connect finishing in the other companion
+   * writes its secret a moment before its settings.
+   */
+  async #sweep(): Promise<void> {
+    const names = await readdir(this.dir).catch((): string[] => []);
+    for (const name of names) {
+      const stray = /^([a-z0-9][a-z0-9-]*)\.(secret|json)(?:\.\d+\.\d+)?(\.tmp)?$/.exec(name);
+      if (!stray) continue;
+      const [, id = "", kind, temp] = stray;
+      if (!temp && (kind === "json" || names.includes(`${id}.json`))) continue;
+      const path = join(this.dir, name);
+      const modified = await stat(path).then((info) => info.mtimeMs, () => Date.now());
+      if (Date.now() - modified < STRAY_MIN_AGE_MS) continue;
+      if (kind === "secret") await this.#revokeStray(id, await readTextFile(path).catch(() => null));
+      await rm(path, { force: true });
+      this.log.info(`removed stray account file ${name}`);
+    }
+  }
+
+  /** The connector is known from the id's catalog entry: a "google-…" secret is a Google credential. */
+  async #revokeStray(id: string, text: string | null): Promise<void> {
+    const connectorId = catalogEntry(id.replace(/-[0-9a-f]+$/, ""))?.connector;
+    if (!connectorId || text === null) return;
+    const connector = connectors[connectorId];
+    const secret = connector.secret.safeParse(parseJson(text));
+    if (secret.success) await connector.revoke(secret.data, AbortSignal.timeout(REVOKE_TIMEOUT_MS)).catch(() => {});
   }
 
   list(): AccountView[] {

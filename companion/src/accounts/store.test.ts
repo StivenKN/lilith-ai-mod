@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockGoogle, type MockGoogle } from "../../scripts/mock-google.ts";
@@ -201,6 +201,26 @@ describe("AccountStore", () => {
     await store.add(google, await connected(), false);
     expect((await store.sources(gate)[0]!.search(parseQuery("laura"), AbortSignal.timeout(2000))).map((hit) => hit.title)).toEqual(["Fotos del viaje"]);
     expect(mock.refreshes).toBe(before + 1);
+  });
+
+  test("a secret or a temp file a crash left behind is revoked and removed on load; one just written by a connect in progress is left alone", async () => {
+    const dir = join(root, "orphans");
+    await mkdir(dir, { recursive: true });
+    const stale = await connected("stale@gmail.com");
+    const staleId = accountId("google", "stale@gmail.com");
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000);
+    for (const name of [`${staleId}.secret`, `${staleId}.json.123.4.tmp`]) {
+      await writeFile(join(dir, name), name.endsWith(".secret") ? JSON.stringify(stale.secret) : "{}");
+      await utimes(join(dir, name), tenMinutesAgo, tenMinutesAgo);
+    }
+    const fresh = await connected("fresh@gmail.com");
+    const freshId = accountId("google", "fresh@gmail.com");
+    await writeFile(join(dir, `${freshId}.secret`), JSON.stringify(fresh.secret));
+    const store = await load("orphans");
+    expect(await readdir(dir)).toEqual([`${freshId}.secret`]);
+    expect(mock.knowsRefreshToken(stale.secret.refreshToken)).toBe(false);
+    expect(mock.knowsRefreshToken(fresh.secret.refreshToken)).toBe(true);
+    expect(store.list()).toEqual([]);
   });
 
   test("two companions see each other's connects and disconnects through the folder watcher", async () => {
