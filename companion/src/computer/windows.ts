@@ -7,7 +7,7 @@ import type { Desktop, InputWatch } from "./desktop.ts";
 import { encodeInputs, INPUT_SIZE, sendCheckedInputs, typeEvents, type InputEvent } from "./input.ts";
 import { parseKeys, parseModifiers, type VirtualKey } from "./keys.ts";
 import { guardAction, ownWindow, terminalWindow } from "./guards.ts";
-import { bgraToPng } from "./png.ts";
+import { bgraToPng } from "../png.ts";
 import { playerRawInput, rawInputDevices } from "./raw-input.ts";
 import { waitForLaunchFocus, type FocusedWindow } from "./focus.ts";
 

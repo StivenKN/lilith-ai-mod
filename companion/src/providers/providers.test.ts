@@ -3,10 +3,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import { z } from "zod";
-import { bgraToPng } from "../computer/png.ts";
+import { bgraToPng } from "../png.ts";
 import { createProvider } from "./index.ts";
 import { pullOllamaModel, unloadOllama, warmUpOllama, type PullProgress } from "./ollama.ts";
-import { ProviderError, type ChatResult } from "./types.ts";
+import { ProviderError, type ChatResult, type ToolSpec } from "./types.ts";
 
 type Handler = (request: Request, body: Record<string, unknown>) => Response | Promise<Response>;
 
@@ -33,6 +33,12 @@ const completion = (content: string, extra: Record<string, unknown> = {}) =>
   Response.json({ model: "m", choices: [{ finish_reason: "stop", message: { content, ...extra } }] });
 
 const request = { system: "persona", turns: [{ role: "user" as const, content: "¿hola?" }], maxTokens: 100, temperature: 0.8, timeoutMs: 2000 };
+/** Tools shaped like the computer turn's, so the adapters are tested on their own. */
+const pcTools: ToolSpec[] = [
+  { name: "computer_use", description: "Use the screen.", input: z.object({ action: z.string() }) },
+  { name: "open_app", description: "Open an app.", input: z.object({ name: z.string() }) },
+];
+const browserTool: ToolSpec = { name: "browser", description: "Use the browser.", input: z.object({ action: z.string() }) };
 const noop = () => {};
 
 async function chatError(promise: Promise<ChatResult>): Promise<ProviderError> {
@@ -83,7 +89,7 @@ describe("OpenAI-compatible adapter", () => {
     const reached = new Promise<void>((resolve) => { started = resolve; });
     const provider = createProvider({ preset: "custom", baseUrl: server.url, model: "retry-cancellation", apiKey: "test" }, () => started());
     const controller = new AbortController();
-    const pending = mode === "chat" ? provider.chat({ ...request, signal: controller.signal }) : provider.agent({ ...request, vision: false, browser: false }).next([], { timeoutMs: 2000, signal: controller.signal });
+    const pending = mode === "chat" ? provider.chat({ ...request, signal: controller.signal }) : provider.agent({ ...request, vision: false, tools: pcTools }).next([], { timeoutMs: 2000, signal: controller.signal });
     await reached;
     controller.abort();
     await expect(pending).rejects.toThrow();
@@ -249,7 +255,7 @@ describe("Anthropic adapter", () => {
   });
 });
 
-const agentRequest = { ...request, vision: true, browser: false };
+const agentRequest = { ...request, vision: true, tools: pcTools };
 const http = { timeoutMs: 2000 };
 const image = bgraToPng(Uint8Array.of(0, 0, 255, 0), 1, 1);
 const transcript = z.object({ messages: z.array(z.looseObject({ role: z.string(), content: z.unknown() })) });
@@ -448,7 +454,7 @@ describe("computer sessions", () => {
     const server = mock(() => preset === "ollama"
       ? Response.json({ message: { content: "", tool_calls: [{ function: { name: "browser", arguments: { action: "read" } } }] } })
       : completion("", { role: "assistant", tool_calls: [{ id: `call-${++n}`, type: "function", function: { name: "browser", arguments: '{"action":"read"}' } }] }));
-    const session = createProvider({ preset, baseUrl: server.url, model: "qwen3", apiKey: "test" }, noop).agent({ ...agentRequest, vision: false, browser: true });
+    const session = createProvider({ preset, baseUrl: server.url, model: "qwen3", apiKey: "test" }, noop).agent({ ...agentRequest, vision: false, tools: [...pcTools, browserTool] });
     const first = await session.next([], http);
     const second = await session.next([{ id: first.calls[0]!.id, text: "OK", page: "First page [1] link", caption: "This is the browser page now." }], http);
     await session.next([{ id: second.calls[0]!.id, text: "OK", page: "Second page [2] button", caption: "This is the browser page now." }], http);

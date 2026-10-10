@@ -4,8 +4,8 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessageParam, BetaToolUnion, BetaToolResultBlockParam, BetaTextBlockParam, BetaImageBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { computerTools, toolSchema } from "../computer/actions.ts";
 import { classifyStatus, toolsUnsupported, trimSlash } from "./http.ts";
+import { toolSchema } from "./tools.ts";
 import { normalizeTurns, ProviderError, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
 
 const FALLBACK_MODELS = /^claude-(fable-5-1|opus-5-5|opus-5|sonnet-5-5)$/;
@@ -113,7 +113,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
           }
           for (let attempt = 0; ; attempt++) {
             const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
-            const tools: BetaToolUnion[] = computerTools(request.vision, request.browser)
+            const tools: BetaToolUnion[] = request.tools
               .filter((tool) => !toolset || tool.name !== "computer_use")
               .map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
             if (toolset) tools.unshift({ type: "computer_toolset_20260801", configs: { hold_key: { enabled: false }, left_mouse_down: { enabled: false }, left_mouse_up: { enabled: false } } });

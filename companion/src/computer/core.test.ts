@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
-import { computerTools, parseCall, physicalPoint, screenshotPoint, screenshotSize, toolCallsInText, toolSchema, type Action } from "./actions.ts";
+import { toolCallsInText, toolSchema } from "../providers/tools.ts";
+import { computerTools, parseCall, physicalPoint, screenshotPoint, screenshotSize, type Action } from "./actions.ts";
 import { describeWindows, matchApp, matchWindow, parseApps, windowOf } from "./apps.ts";
 import { blockedApp, guardAction } from "./guards.ts";
 import { encodeInputs, INPUT_SIZE, sendCheckedInputs, typeEvents, type InputEvent } from "./input.ts";
 import { parseKeys } from "./keys.ts";
-import { bgraToPng } from "./png.ts";
+import { bgraToPng } from "../png.ts";
 import { checkedUrl } from "../open.ts";
 import { playerRawInput, rawInputDevices } from "./raw-input.ts";
 import { waitForLaunchFocus } from "./focus.ts";

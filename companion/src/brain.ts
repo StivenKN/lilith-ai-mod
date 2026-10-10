@@ -16,7 +16,7 @@ import type { BrowserHub } from "./browser/hub.ts";
 import { BrowserSession } from "./browser/session.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
-import type { Action } from "./computer/actions.ts";
+import { computerTools, type Action } from "./computer/actions.ts";
 import type { Capabilities, ChatRequest, ChatResult, ChatTurn } from "./providers/types.ts";
 import { translator, type Translate } from "./i18n.ts";
 import { resolveLanguage, uiLocaleFor, type Language, type UiLocale } from "./languages.ts";
@@ -501,7 +501,7 @@ export class Brain {
       const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, browser: !!browser } };
       let lastStatus = "";
       const run = (asked: readonly ChatTurn[], temperature: number) => runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), vision: capabilities.vision, browser: !!browser, maxTokens: RETRY_MAX_TOKENS, temperature }),
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), tools: computerTools(capabilities.vision, !!browser), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature }),
         desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
         ...(browser ? { browser } : {}),
         canAct: () => epoch === this.#computerEpoch,

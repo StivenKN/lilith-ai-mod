@@ -3,7 +3,7 @@ import type { BrowserAction, Observation } from "../browser/session.ts";
 import { runComputerTurn, type BrowserTurn, type ComputerTurnOptions } from "./agent.ts";
 import { FakeDesktop } from "./desktop.ts";
 import { waitForLaunchFocus } from "./focus.ts";
-import { bgraToPng } from "./png.ts";
+import { bgraToPng } from "../png.ts";
 import type { AgentSession, AgentStep, ToolCall, ToolResult } from "../providers/types.ts";
 
 const call = (name: string, input: unknown): ToolCall => ({ id: crypto.randomUUID(), name, input });

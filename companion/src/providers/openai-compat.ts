@@ -4,10 +4,10 @@
 
 import { z } from "zod";
 import { randomInt } from "node:crypto";
-import { computerTools, toolCallsInText, toolSchema } from "../computer/actions.ts";
-import { bgraToPng } from "../computer/png.ts";
+import { bgraToPng } from "../png.ts";
 import { isLocalUrl, type Preset } from "./presets.ts";
 import { awaitWithAbort, requestJson, toolsUnsupported, trimSlash, withRetry, type HttpOptions } from "./http.ts";
+import { toolCallsInText, toolSchema } from "./tools.ts";
 import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ChatTurn, type Provider, type ToolCall } from "./types.ts";
 
 const AssistantMessage = z.looseObject({
@@ -171,7 +171,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
 
     agent(request) {
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map((turn): Message => turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content })];
-      const tools = computerTools(request.vision, request.browser);
+      const tools = request.tools;
       let sequence = 0;
       // Where the latest screenshot or page sits. The one before is blanked: each costs as much context as a long reply.
       let observation: { index: number; image: boolean } | undefined;

@@ -5,8 +5,8 @@
 // wizard needs.
 
 import { z } from "zod";
-import { computerTools, toolCallsInText, toolSchema } from "../computer/actions.ts";
 import { awaitWithAbort, requestJson, send, toolsUnsupported, trimSlash } from "./http.ts";
+import { toolCallsInText, toolSchema } from "./tools.ts";
 import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
 
 /** Minutes a model stays loaded after its last request, unless the settings say otherwise. */
@@ -117,7 +117,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
     agent(request) {
       type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
       const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(({ role, content }) => ({ role, content }))];
-      const tools = computerTools(request.vision, request.browser);
+      const tools = request.tools;
       let pending: ToolCall[] = [];
       let sequence = 0;
       // The latest screenshot or page. The one before is blanked: each costs as much context as a long reply.
