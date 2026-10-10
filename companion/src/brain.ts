@@ -16,7 +16,7 @@ import type { BrowserHub } from "./browser/hub.ts";
 import { BrowserSession } from "./browser/session.ts";
 import { runComputerTurn } from "./computer/agent.ts";
 import { getDesktop, type DesktopStatus } from "./computer/desktop.ts";
-import type { Action } from "./computer/actions.ts";
+import { computerTools, type Action } from "./computer/actions.ts";
 import type { Capabilities, ChatRequest, ChatResult, ChatTurn } from "./providers/types.ts";
 import { translator, type Translate } from "./i18n.ts";
 import { resolveLanguage, uiLocaleFor, type Language, type UiLocale } from "./languages.ts";
@@ -45,7 +45,8 @@ import { isOllamaModelLoaded, unloadOllama, warmUpOllama } from "./providers/oll
 import { getPreset, isLocalUrl } from "./providers/presets.ts";
 import { PROTOCOL_VERSION, type CompanionMessage, type Emotion, type GameState, type HelloMessage, type PluginMessage } from "./protocol.ts";
 import { paginate, parseReply, repeatedSentences, withoutSentences } from "./reply.ts";
-import { createSearcher, findSearchRequest, stripSearchTags } from "./search.ts";
+import type { Facet } from "./lookup/facets.ts";
+import { openShelf, stripLookupTags, type Found, type LookupRequest, type Shelf } from "./lookup/shelf.ts";
 import type { SpokenLanguage } from "./voice/catalog.ts";
 import { VoiceError, type Spoken, type VoiceService } from "./voice/index.ts";
 
@@ -364,9 +365,10 @@ export class Brain {
     const language = this.replyLanguage();
     try {
       const provider = createProvider(settings, (message) => this.#log.warn(message));
+      const shelf = openShelf({ search: this.options.config.current.search, log: this.#log });
       const { text, emotion, model } = await this.#ask(provider, settings, language, [
         { role: "user", content: language === "es" ? "Hola, Lilith. ¿Me escuchas?" : "Hi Lilith. Can you hear me?" },
-      ]);
+      ], shelf);
       return { ok: true, text, emotion, model, latencyMs: Math.round(performance.now() - started) };
     } catch (error) {
       const failure = this.#describe(error, settings);
@@ -410,11 +412,12 @@ export class Brain {
       };
       const budget = contextBudget(isLocalProvider(settings));
       const turns: ChatTurn[] = [...this.options.memory.promptTurns(budget), { role: "user", content: userTurn }];
+      const shelf = openShelf({ search: config.search, log: this.#log });
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
       const { text, emotion, model } = useComputer
-        ? await this.#askComputer(provider, settings, language, turns, desktop, () => clearInterval(escalation), onSearch, input.computerEpoch)
-        : await this.#ask(provider, settings, language, turns, onSearch);
+        ? await this.#askComputer(provider, settings, language, turns, shelf, desktop, () => clearInterval(escalation), onSearch, input.computerEpoch)
+        : await this.#ask(provider, settings, language, turns, shelf, { onSearch });
       const latencyMs = Math.round(performance.now() - started);
       const stored = await this.options.memory.addExchange(input.user, text, input.source);
       if (!stored) this.#log.info("reply was still a near-repeat; shown, but kept out of her context");
@@ -466,6 +469,7 @@ export class Brain {
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
+    shelf: Shelf,
     status: Extract<DesktopStatus, { available: true }>,
     actionsStarted: () => void,
     onSearch: (query: string) => void,
@@ -474,7 +478,7 @@ export class Brain {
     const config = this.options.config.current;
     const tr = translator(this.uiLocale());
     if (this.#stopped) return { text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model };
-    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, onSearch);
+    if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelf, { onSearch });
     const controller = new AbortController();
     this.#computerAbort = controller;
     this.#computerActed = false;
@@ -483,9 +487,9 @@ export class Brain {
     let acted = false;
     let fellBack = false;
     const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model });
-    const fallback = async () => {
+    const fallback = async (asked: LookupRequest | null = null) => {
       fellBack = true;
-      try { return await this.#ask(provider, settings, language, turns, onSearch, controller.signal); }
+      try { return await this.#ask(provider, settings, language, turns, shelf, { onSearch, signal: controller.signal, asked }); }
       catch (error) { if (controller.signal.aborted) return stopped(); throw error; }
     };
     try {
@@ -495,13 +499,12 @@ export class Brain {
       if (config === this.options.config.current) this.#computerCapabilities = capabilities;
       if (epoch !== this.#computerEpoch) return await fallback();
       if (!capabilities.tools) return await fallback();
-      const searcher = createSearcher(config.search);
       const link = this.options.browser?.current();
       const browser = link ? new BrowserSession(link, { vision: capabilities.vision }) : undefined;
-      const context: PromptContext = { ...this.#promptContext(language, searcher !== null), computer: { vision: capabilities.vision, browser: !!browser } };
+      const context: PromptContext = { ...this.#promptContext(language, shelf.facets), computer: { vision: capabilities.vision, browser: !!browser } };
       let lastStatus = "";
       const run = (asked: readonly ChatTurn[], temperature: number) => runComputerTurn({
-        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), vision: capabilities.vision, browser: !!browser, maxTokens: RETRY_MAX_TOKENS, temperature }),
+        session: provider.agent({ system: buildSystemPrompt(context), turns: withNote(asked, context), tools: computerTools(capabilities.vision, !!browser), vision: capabilities.vision, maxTokens: RETRY_MAX_TOKENS, temperature }),
         desktop: status.desktop, vision: capabilities.vision, http, task: turns.at(-1)?.content ?? "",
         ...(browser ? { browser } : {}),
         canAct: () => epoch === this.#computerEpoch,
@@ -521,8 +524,12 @@ export class Brain {
       let result = await run(turns, config.advanced.temperature);
       if (!acted && result.outcome === "superseded") return await fallback();
       if (!acted && result.outcome === "done") {
-        const initialReply = parseReply(stripSearchTags(result.text), config.advanced.maxReplyChars);
-        if ((searcher && findSearchRequest(result.text)) || !initialReply.text) return await fallback();
+        // A lookup asked before any action goes to ordinary chat with the request already chosen, so
+        // the model isn't asked twice.
+        const lookup = shelf.requestIn(result);
+        if (lookup) return await fallback(lookup);
+        const initialReply = parseReply(stripLookupTags(result.text), config.advanced.maxReplyChars);
+        if (!initialReply.text) return await fallback();
         // A plain answer that mostly repeats her is often a repeated PC request answered in words
         // ("I opened it"), so the retry keeps the tools; tool-less chat could never act on it.
         if (repeats(initialReply.text, this.options.memory.recentReplies()).mostly) {
@@ -533,21 +540,19 @@ export class Brain {
         }
       }
       let text = result.outcome === "stopped" ? tr("computer.stopped") : result.text;
-      const query = result.outcome === "done" && searcher ? findSearchRequest(text) : null;
-      if (query && searcher) {
-        onSearch(query);
-        let search: NonNullable<PromptContext["search"]>;
-        try { search = { kind: "results", query, results: await searcher(query) }; }
-        catch (error) { this.#log.warn(`computer turn search failed: ${errorMessage(error)}`); search = { kind: "failed", query }; }
+      const asked = result.outcome === "done" ? shelf.requestIn(result) : null;
+      if (asked) {
+        onSearch(asked.query);
+        const found = await shelf.look(asked, controller.signal);
         // This final answer has no tools, so a search cannot repeat desktop actions.
         const answer = await provider.chat({
           system: buildSystemPrompt(context),
-          turns: withNote([...withNote(turns, context), { role: "assistant", content: text }, { role: "user", content: "Answer using the search results. Do not perform or claim any additional computer actions." }], { ...context, search }),
+          turns: withNote([...withNote(turns, context), { role: "assistant", content: text }, { role: "user", content: "Answer using the search results. Do not perform or claim any additional computer actions." }], context, found),
           maxTokens: MAX_TOKENS, temperature: config.advanced.temperature, ...http,
         });
         text = answer.text;
       }
-      const reply = parseReply(stripSearchTags(text), config.advanced.maxReplyChars);
+      const reply = parseReply(stripLookupTags(text), config.advanced.maxReplyChars);
       this.#warm.add(warmKey(settings));
       return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model };
     } catch (error) {
@@ -582,21 +587,20 @@ export class Brain {
   }
 
   /**
-   * Calls the model and shapes the answer. If web search is on and the model asks for one
-   * (`[search: query]`), runs it and asks again with the results. Then one retry each for
-   * empty and repeated replies.
+   * Calls the model and shapes the answer. If the model asks for a lookup (`[search: query]`), or
+   * the computer turn already got one (`asked`), runs it and asks again with what it found. Then
+   * one retry each for empty and repeated replies.
    */
   async #ask(
     provider: Provider,
     settings: ProviderSettings,
     language: Language,
     turns: Parameters<Provider["chat"]>[0]["turns"],
-    onSearch: (query: string) => void = () => {},
-    signal?: AbortSignal,
+    shelf: Shelf,
+    { onSearch = () => {}, signal, asked = null }: { onSearch?: (query: string) => void; signal?: AbortSignal; asked?: LookupRequest | null } = {},
   ) {
     const config = this.options.config.current;
-    const searcher = createSearcher(config.search);
-    const context = this.#promptContext(language, searcher !== null);
+    const context = this.#promptContext(language, shelf.facets);
     let request = {
       system: buildSystemPrompt(context),
       turns: withNote(turns, context),
@@ -606,20 +610,16 @@ export class Brain {
       ...(signal ? { signal } : {}),
     };
 
-    let result = await provider.chat(request);
-    const query = searcher ? findSearchRequest(result.text) : null;
-    if (searcher && query) {
-      onSearch(query);
-      let search: NonNullable<PromptContext["search"]>;
-      try {
-        const results = await searcher(query);
-        this.#log.info(`web search (${config.search.mode}) "${query}": ${results.length} result(s)`);
-        search = { kind: "results", query, results };
-      } catch (error) {
-        this.#log.warn(`web search (${config.search.mode}) "${query}" failed: ${this.options.logger.redact(errorMessage(error))}`);
-        search = { kind: "failed", query };
-      }
-      request = { ...request, turns: withNote(turns, { ...context, search }) };
+    let result: ChatResult | undefined;
+    let lookup = asked;
+    if (!lookup) {
+      result = await provider.chat(request);
+      lookup = shelf.requestIn(result);
+    }
+    if (lookup) {
+      onSearch(lookup.query);
+      const found = await shelf.look(lookup, signal);
+      request = { ...request, turns: withNote(turns, context, found) };
       result = await provider.chat(request);
     }
     const { reply: first, model } = await this.#complete(provider, request, config.advanced.maxReplyChars, result);
@@ -632,7 +632,7 @@ export class Brain {
       this.#log.info("reply mostly repeated her earlier words; asking once for something new");
       const cued = request.turns.map((turn, index) => (index === request.turns.length - 1 ? { ...turn, content: turn.content + avoidRepeatCue(language) } : turn));
       const retried = await provider.chat({ ...request, turns: cued, temperature: Math.min(2, request.temperature + 0.2) });
-      const retry = parseReply(stripSearchTags(retried.text), config.advanced.maxReplyChars);
+      const retry = parseReply(stripLookupTags(retried.text), config.advanced.maxReplyChars);
       if (retry.text) reply = retry;
     }
     const kept = repeats(reply.text, recent);
@@ -650,11 +650,11 @@ export class Brain {
    */
   async #complete(provider: Provider, request: ChatRequest, maxChars: number, result?: ChatResult) {
     result ??= await provider.chat(request);
-    let reply = parseReply(stripSearchTags(result.text), maxChars);
+    let reply = parseReply(stripLookupTags(result.text), maxChars);
     if (!reply.text) {
       this.#log.warn(`empty reply (finish: ${result.finish}, reasoning: ${result.reasoning.length} chars); retrying with a larger budget`);
       result = await provider.chat({ ...request, maxTokens: RETRY_MAX_TOKENS });
-      reply = parseReply(stripSearchTags(result.text), maxChars);
+      reply = parseReply(stripLookupTags(result.text), maxChars);
       if (!reply.text) throw new ProviderError("empty_reply", `No visible text after retry (finish: ${result.finish})`);
     }
     return { reply, model: result.model };
@@ -1039,7 +1039,7 @@ export class Brain {
   }
 
   /** What a chat prompt is built from: persona, what she remembers, and the moment. */
-  #promptContext(language: Language, searchAvailable: boolean): PromptContext {
+  #promptContext(language: Language, facets: readonly Facet[]): PromptContext {
     const { config, memory } = this.options;
     return {
       language,
@@ -1052,7 +1052,7 @@ export class Brain {
       lastTalked: memory.lastUserMessageAt,
       recentReplies: memory.recentReplies(2),
       maxChars: config.current.advanced.maxReplyChars,
-      ...(searchAvailable ? { search: { kind: "available" as const } } : {}),
+      facets,
     };
   }
 
@@ -1125,8 +1125,8 @@ function repeats(text: string, recent: readonly string[]): { text: string; repea
 }
 
 /** The turns as the model gets them: the note for this moment goes in front of the latest message. */
-const withNote = (turns: readonly ChatTurn[], context: PromptContext): ChatTurn[] =>
-  turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: withTurnNote(context, turn.content) } : turn));
+const withNote = (turns: readonly ChatTurn[], context: PromptContext, found?: Found): ChatTurn[] =>
+  turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: withTurnNote(context, turn.content, found) } : turn));
 
 export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
   mode === "on" || (mode === "auto" && isLocalUrl(settings.baseUrl));

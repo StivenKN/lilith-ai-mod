@@ -80,9 +80,9 @@ export interface ToolResult {
 }
 
 export interface AgentRequest extends Pick<ChatRequest, "system" | "turns" | "maxTokens" | "temperature"> {
+  tools: readonly ToolSpec[];
+  /** The model can see: results may carry screenshots, and Claude gets its computer toolset. */
   vision: boolean;
-  /** The browser extension is connected: the `browser` tool is offered. */
-  browser: boolean;
 }
 
 /**

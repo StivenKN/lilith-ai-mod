@@ -9,7 +9,7 @@ Lilith.exe (game) ─ BepInEx 6.0.0-be.780 (IL2CPP)
       LilithAICompanion.exe --bridge   companion/ (TypeScript on Bun, single exe)
         ├─ providers   OpenAI-compatible · Anthropic SDK · Ollama native
         ├─ brain       persona · prompt · reply shaping · paging · memory · speak-first
-        ├─ search      DuckDuckGo lite (keyless) · Firecrawl (API key)
+        ├─ lookup      what she may look up, behind one shelf: web search (DuckDuckGo lite · Firecrawl)
         ├─ computer    Windows x64 FFI · screenshots · input · bounded tool loop
         ├─ browser     the browser extension's connections · page snapshots · element numbers
         ├─ voice       Piper (speech) · whisper.cpp (recognition), short-lived local processes
@@ -75,10 +75,12 @@ Nothing needs a restart after a settings change:
    - 429 and 5xx errors get one retry.
    - A 400 that names a parameter drops or renames that parameter and retries.
    - With web search on, the prompt lets the model answer with only `[search: query]` (or
-     `[buscar: …]`). The companion runs that search (`search.ts`), shows "searching the web" in the
-     popup, and asks again with the top results in the note before the latest message. A failed search is logged and
-     the model is told it got nothing, so she still answers. This works with every provider because
-     it needs no tool-calling support.
+     `[buscar: …]`). The companion runs that search through the lookup shelf (`lookup/shelf.ts`,
+     over the backends in `search.ts`), shows "searching the web" in the popup, and asks again with
+     the top results in the note before the latest message. A failed search is logged and the model
+     is told it got nothing, so she still answers. This works with every provider because it needs
+     no tool-calling support. A computer turn that asks for a search before acting is answered the
+     same way, without asking the model again; one that asks after acting gets one tool-free answer.
 5. It shapes the reply:
    - strips `<think>` blocks, markdown, emoji and stage directions;
    - reads the `[emotion]` tag (Spanish or English);

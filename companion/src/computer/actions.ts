@@ -192,11 +192,6 @@ export function computerTools(vision: boolean, browser = false): ToolSpec[] {
   ];
 }
 
-export function toolSchema(tool: ToolSpec): Record<string, unknown> {
-  const { $schema, ...schema } = z.toJSONSchema(tool.input, { target: "draft-7", io: "input" });
-  return schema;
-}
-
 const pos = ([x, y]: z.infer<typeof point>): Point => ({ x, y });
 
 /**
@@ -444,30 +439,6 @@ function gridPoint(value: unknown, screen: Size): Point {
   if (x < 0 || y < 0 || x > GRID || y > GRID) throw new Error(`Coordinates go from 0 to ${GRID}: [0, 0] is the top-left corner of the screen and [${GRID}, ${GRID}] the bottom-right`);
   const image = screenshotSize(screen);
   return { x: Math.min(image.width - 1, Math.round(x * image.width / GRID)), y: Math.min(image.height - 1, Math.round(y * image.height / GRID)) };
-}
-
-const TextCall = z.object({ name: z.string().min(1), arguments: z.union([z.string().transform((json) => JSON.parse(json) as unknown), z.unknown()]) });
-
-/**
- * Local servers sometimes leave a call in the reply text, in the `<tool_call>` format Qwen and
- * Hermes models write, instead of returning it as a tool call. Returns those calls and the rest.
- * A bare JSON reply counts only when it names one of our tools.
- */
-export function toolCallsInText(content: string, tools: readonly string[]): { calls: Array<Omit<ToolCall, "id">>; text: string } {
-  const parse = (json: string): Omit<ToolCall, "id"> => {
-    try {
-      const call = TextCall.parse(JSON.parse(json));
-      return { name: call.name, input: call.arguments };
-    } catch { return { name: "computer_use", input: null, error: "Malformed tool call. Send one valid JSON object inside <tool_call></tool_call>." }; }
-  };
-  const tagged = [...content.matchAll(/<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g)];
-  if (tagged.length) return { calls: tagged.map((match) => parse(match[1]!.trim())), text: content.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, "").trim() };
-  const bare = content.trim();
-  if (bare.startsWith("{") && bare.endsWith("}")) {
-    const call = parse(bare);
-    if (!call.error && tools.includes(call.name)) return { calls: [call], text: "" };
-  }
-  return { calls: [], text: content };
 }
 
 export function screenshotSize(size: Size): Size {

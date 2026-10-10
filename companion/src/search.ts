@@ -1,7 +1,6 @@
 // Web search for Lilith's replies. Two backends:
 // - "local": DuckDuckGo's lite page, queried straight from this PC. Free, no account or key.
 // - "firecrawl": Firecrawl's search API with the user's key. Sturdier, never rate-limited by a captcha.
-// Searches run only when the model asks for one with a `[search: query]` tag (see brain.ts).
 
 import { z } from "zod";
 import { requestJson } from "./providers/http.ts";
@@ -129,15 +128,3 @@ function decodeEntities(text: string): string {
     return namedEntities[entity.toLowerCase()] ?? match;
   });
 }
-
-/** Matches the model's request for a search, in English or Spanish: `[search: weather in Lima]`. */
-const SEARCH_TAG = /[[(（【]\s*(?:search|web search|buscar|busca|búsqueda|busqueda)\s*[:：]\s*([^\]）】\n]{2,200}?)\s*[\])）】]/i;
-
-/** The query the model asked to search for, if its reply contains a search tag. */
-export function findSearchRequest(text: string): string | null {
-  const cleaned = text.replace(/<think(ing)?>[\s\S]*?<\/think(ing)?>/gi, "");
-  return SEARCH_TAG.exec(cleaned)?.[1]?.trim().replace(/^["“«]|["”»]$/g, "") || null;
-}
-
-/** Removes search tags from a reply (a model may still write one after it got its results). */
-export const stripSearchTags = (text: string): string => text.replace(new RegExp(SEARCH_TAG.source, "gi"), "");

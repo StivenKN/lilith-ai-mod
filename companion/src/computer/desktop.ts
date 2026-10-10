@@ -1,6 +1,6 @@
 import type { Action, Point, Region, Size } from "./actions.ts";
 import type { Foreground } from "./guards.ts";
-import { bgraToPng } from "./png.ts";
+import { bgraToPng } from "../png.ts";
 import { screenshotSize } from "./actions.ts";
 
 export interface InputWatch {
