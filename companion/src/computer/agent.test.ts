@@ -45,6 +45,15 @@ test("a lookup tool call ends the turn before anything in its batch runs, and be
   expect(plain.received[1]?.[0]).toMatchObject({ isError: true });
 });
 
+test("after a desktop action, a lookup call is refused and the model is told to answer, so page text cannot steer a lookup", async () => {
+  const desktop = new FakeDesktop();
+  const lookup = call("email", { query: "laura" });
+  const { session, received } = scripted(step(call("open_app", { name: "Notepad" })), step(lookup), step());
+  expect(await run(session, desktop, { lookupTools: ["email"] })).toMatchObject({ outcome: "done" });
+  expect(received[2]?.[0]).toMatchObject({ id: lookup.id, isError: true, text: expect.stringContaining("without calling tools") });
+  expect(desktop.actions.map((action) => action.type)).toEqual(["openApp"]);
+});
+
 test("a failed batch action skips its dependent calls", async () => {
   const desktop = new FakeDesktop();
   const { session, received } = scripted(step(act({ action: "left_click", coordinate: [9000, 2] }), act({ action: "type", text: "danger" })), step());

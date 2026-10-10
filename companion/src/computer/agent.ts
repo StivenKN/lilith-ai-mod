@@ -47,6 +47,7 @@ const aimed = (action: Action) => action.type === "move" || action.type === "dra
 
 const SKIPPED = "Not executed: an earlier computer action in this turn failed.";
 const ENDED = "Not executed: you already ended the task.";
+const LOOKUP_AFTER_ACTING = "Not executed: your host's accounts cannot be looked in after acting on the PC. Reply to your host now with what you have, without calling tools.";
 
 /**
  * Runs tool batches in order, stops after the first failure, and always releases the input watcher.
@@ -105,8 +106,9 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       // After terminate or answer the model only has to reply. More calls end the task anyway.
       if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [] };
       // A lookup is terminal and answered without tools, so nothing in its batch runs: not a PC
-      // action named beside it, and never parseCall, whose aliases must not swallow it.
-      if (step.calls.some((call) => lookups.has(call.name))) return { text: step.text, model, outcome: "lookup", calls: step.calls };
+      // action named beside it, and never parseCall, whose aliases must not swallow it. Once the
+      // model has acted it has seen page text, which must not get to steer a lookup: refused below.
+      if (steps === 0 && step.calls.some((call) => lookups.has(call.name))) return { text: step.text, model, outcome: "lookup", calls: step.calls };
       results = [];
       let skip: string | null = null;
       let custom = false;
@@ -116,6 +118,10 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       for (const call of step.calls) {
         checkInput();
         if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [] };
+        if (lookups.has(call.name)) {
+          results.push({ id: call.id, text: LOOKUP_AFTER_ACTING, isError: true });
+          continue;
+        }
         if (skip) {
           results.push({ id: call.id, text: skip, isError: true });
           continue;
