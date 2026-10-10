@@ -69,9 +69,9 @@ test("a rejected save doesn't hold up the saves after it", async () => {
   expect(seen.map((config) => config.hotkey.key)).toEqual(["F9"]);
 });
 
-test("concurrent atomic writes to one file both succeed and one lands whole", async () => {
+test("concurrent atomic writes to one file all succeed and one lands whole", async () => {
   const path = await tempPath("memory.json");
-  const contents = ['{ "the": "longer of the two saves" }\n', '{ "b": 2 }\n'];
+  const contents = Array.from({ length: 32 }, (_, i) => `{ "save": ${i}, "pad": "${"x".repeat(i * 40)}" }\n`);
   await Promise.all(contents.map((text) => writeAtomic(path, text)));
   expect(contents).toContain(await readFile(path, "utf8"));
 });
