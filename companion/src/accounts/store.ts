@@ -136,13 +136,14 @@ export class AccountStore {
   }
 
   /** Writes <id>.json only. Never touches the secret, and never rewrites a file this version cannot open. */
-  async update(id: AccountId, patch: { facets?: readonly PrivateFacet[]; policy?: Partial<Policy> }): Promise<AccountView> {
+  async update(id: AccountId, patch: { facets?: readonly PrivateFacet[] | undefined; policy?: { [K in keyof Policy]?: Policy[K] | undefined } | undefined }): Promise<AccountView> {
     const account = this.#accounts.get(id);
     if (!account) throw new Error(`No account ${id}`);
     if (account.view.status === "needs-newer-version" || !isConnectorId(account.file.connector)) throw new Error(`Account ${id} needs a newer version of Lilith AI`);
     const allowed = connectors[account.file.connector].facets;
     const facets = patch.facets ? patch.facets.filter((facet) => allowed.includes(facet)) : account.file.facets;
-    await this.#write(id, { ...account.file, facets: [...facets], policy: { ...account.file.policy, ...patch.policy } });
+    const policy = { enabled: patch.policy?.enabled ?? account.file.policy.enabled, shareOnline: patch.policy?.shareOnline ?? account.file.policy.shareOnline };
+    await this.#write(id, { ...account.file, facets: [...facets], policy });
     return this.#view(id);
   }
 

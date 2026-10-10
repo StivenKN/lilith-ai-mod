@@ -17,6 +17,7 @@ const en = {
   "status.stillThinking": "Still thinking… ({seconds} s)",
   "status.searching": "Searching the web: {query}…",
   "bubble.errorPrefix": "Lilith AI: ",
+  "accounts.noClient": "This copy of Lilith AI was built without Google sign-in. Download a release from the official page.",
 
   // Errors (shown in game and in the dashboard)
   "error.not_configured": "No AI is set up yet. Open the settings from the chat window or the tray menu.",
@@ -440,6 +441,7 @@ const es = {
   "status.stillThinking": "Sigue pensando… ({seconds} s)",
   "status.searching": "Buscando en internet: {query}…",
   "bubble.errorPrefix": "Lilith AI: ",
+  "accounts.noClient": "Esta copia de Lilith AI se compiló sin inicio de sesión con Google. Descarga una versión desde la página oficial.",
 
   "error.not_configured": "Todavía no hay una IA configurada. Abre la configuración desde la ventana de chat o el menú de la bandeja.",
   "error.auth": "La clave de API de {provider} no es válida. Vuelve a pegarla en la configuración.",
