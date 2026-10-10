@@ -152,9 +152,9 @@ describe("Connected accounts", () => {
     audience: "local",
     search: async (query) => (query.words.includes("laura") ? [{ title: "Fotos del viaje", meta: "Laura Pérez, 2026-10-08 10:00", excerpt: "te mando las fotos del viaje", at: 1, read: async () => "Hola Alex, te mando las fotos del viaje a Cartagena." }] : []),
   };
-  const accounts: BrainOptions["accounts"] = { sources: (gate) => (gate.origin === "player" ? [laura] : []) };
+  const accounts: BrainOptions["accounts"] = { sources: (gate) => (gate.origin === "player" && gate.audience === "local" ? [laura] : []) };
   /** Like Ollama: a model without the tools capability answers a tools request with a 400. */
-  const ollama = (name: string, capabilities: string[]) => async (request: Request) => {
+  const ollama = (name: string, capabilities: string[], answer = "Laura te mandó las fotos del viaje. [feliz]") => async (request: Request) => {
     const path = new URL(request.url).pathname;
     if (path === "/api/show") return Response.json({ capabilities });
     if (path === "/api/ps") return Response.json({ models: [] });
@@ -162,7 +162,7 @@ describe("Connected accounts", () => {
     if (body.tools && !capabilities.includes("tools")) return Response.json({ error: `registry.ollama.ai/library/${name} does not support tools` }, { status: 400 });
     return Response.json({ model: name, message: body.tools
       ? { content: "", tool_calls: [{ function: { name: "email", arguments: { query: "laura" } } }] }
-      : { content: "Laura te mandó las fotos del viaje. [feliz]" }, done_reason: "stop" });
+      : { content: answer }, done_reason: "stop" });
   };
   const toolNames = (body: Body) => body.tools?.map((tool) => tool.function.name);
   /** The chat requests only: Ollama's capability check is a POST too. */
@@ -249,6 +249,22 @@ describe("Connected accounts", () => {
     expect(second!.messages[0]!.content).not.toContain("con email");
   });
 
+  test("once the AI is an Ollama cloud model, what she read from an account kept local stays out of its context", async () => {
+    respond = ollama("mail-local", ["tools"]);
+    const { brain, config, memory } = await setup("mail-cloud", { accounts });
+    await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "mail-local" }, features: { learnFacts: false } });
+    expect(await brain.chat("¿qué me escribió Laura?", "game")).toMatchObject({ ok: true, text: "Laura te mandó las fotos del viaje." });
+    expect(memory.history.every((turn) => turn.consulted === "local")).toBe(true);
+    // The same daemon, but a model served from ollama.com: an online audience, so no account and no replay.
+    respond = ollama("mail-local:cloud", ["tools"], "Nada más por ahora, ¿descansamos un rato? [neutral]");
+    await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "mail-local:cloud" } });
+    requests = [];
+    expect(await brain.chat("¿y qué más?", "game")).toMatchObject({ ok: true });
+    expect(chats()).toHaveLength(1);
+    expect(chats()[0]!.tools).toBeUndefined();
+    expect(chats()[0]!.messages.some((message) => message.content.includes("Laura"))).toBe(false);
+  });
+
   test("with the PC on, a lookup asked before acting is answered through chat with no second decision", async () => {
     respond = ollama("mail-pc", ["tools"]);
     const desktop = new FakeDesktop();
@@ -278,9 +294,9 @@ test.each([
   ["custom", "https://fc-public.example", false],
   ["custom", "https://10.public.example", false],
 ] as const)("Automatic control checks the actual %s address %s", (preset, baseUrl, expected) => {
-  expect(computerEnabled("auto", { preset, baseUrl })).toBe(expected);
-  expect(computerEnabled("on", { preset, baseUrl })).toBe(true);
-  expect(computerEnabled("off", { preset, baseUrl })).toBe(false);
+  expect(computerEnabled("auto", { preset, baseUrl, model: "qwen3.5:4b" })).toBe(expected);
+  expect(computerEnabled("on", { preset, baseUrl, model: "qwen3.5:4b" })).toBe(true);
+  expect(computerEnabled("off", { preset, baseUrl, model: "qwen3.5:4b" })).toBe(false);
 });
 
 test("Brain executes one tool turn, shows statuses, and stores only the user and final reply", async () => {

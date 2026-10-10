@@ -23,7 +23,13 @@ test("speak-first and keepsake reactions are autonomous; the game and the dashbo
 });
 
 test("the audience is online unless the AI is on this PC or LAN", () => {
-  expect(audienceOf({ baseUrl: "http://127.0.0.1:11434" })).toBe("local");
-  expect(audienceOf({ baseUrl: "http://192.168.1.4:8080/v1" })).toBe("local");
-  expect(audienceOf({ baseUrl: "https://api.openai.com/v1" })).toBe("online");
+  expect(audienceOf({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.5:4b" })).toBe("local");
+  expect(audienceOf({ baseUrl: "http://192.168.1.4:8080/v1", model: "qwen3.5:4b" })).toBe("local");
+  expect(audienceOf({ baseUrl: "https://api.openai.com/v1", model: "gpt-5-mini" })).toBe("online");
+});
+
+test("an Ollama cloud model is served from ollama.com by the local daemon, so it is online even on localhost", () => {
+  expect(audienceOf({ baseUrl: "http://127.0.0.1:11434", model: "gpt-oss:120b-cloud" })).toBe("online");
+  expect(audienceOf({ baseUrl: "http://127.0.0.1:11434", model: "qwen3-coder:cloud" })).toBe("online");
+  expect(audienceOf({ baseUrl: "http://127.0.0.1:11434", model: "cloudy:4b" })).toBe("local");
 });

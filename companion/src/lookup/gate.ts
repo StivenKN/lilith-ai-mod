@@ -21,8 +21,12 @@ export const originOf = {
   keepsake: "autonomous",
 } as const satisfies Record<StoredTurn["source"], Origin>;
 
+/** A local Ollama daemon serves its `-cloud` and `:cloud` models from ollama.com. */
+const OLLAMA_CLOUD_MODEL = /[-:]cloud$/i;
+
 /** Whether the AI runs on this PC or LAN: the same check that turns computer control on. */
-export const audienceOf = (settings: { baseUrl: string }): Audience => (isLocalUrl(settings.baseUrl) ? "local" : "online");
+export const audienceOf = (settings: { baseUrl: string; model: string }): Audience =>
+  isLocalUrl(settings.baseUrl) && !OLLAMA_CLOUD_MODEL.test(settings.model) ? "local" : "online";
 
 export interface Policy {
   readonly enabled: boolean;

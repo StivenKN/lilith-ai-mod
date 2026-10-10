@@ -1176,7 +1176,7 @@ function repeats(text: string, recent: readonly string[]): { text: string; repea
 const withNote = (turns: readonly ChatTurn[], context: PromptContext, found?: Found): ChatTurn[] =>
   turns.map((turn, index) => (index === turns.length - 1 ? { ...turn, content: withTurnNote(context, turn.content, found) } : turn));
 
-export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl">): boolean =>
+export const computerEnabled = (mode: "auto" | "on" | "off", settings: Pick<ProviderSettings, "preset" | "baseUrl" | "model">): boolean =>
   mode === "on" || (mode === "auto" && audienceOf(settings) === "local");
 const hotkeyLabel = (hotkey: Hotkey) => [hotkey.ctrl && "Ctrl", hotkey.alt && "Alt", hotkey.shift && "Shift", hotkey.key].filter(Boolean).join("+");
 
