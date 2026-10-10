@@ -16,6 +16,7 @@ import { z } from "zod";
 import { readTextFile, writeAtomic } from "./config.ts";
 import { copyFile } from "node:fs/promises";
 import { isRepeat, truncate } from "./reply.ts";
+import type { Audience } from "./lookup/gate.ts";
 import type { ChatTurn } from "./providers/types.ts";
 
 const StoredTurn = z.object({
@@ -28,6 +29,12 @@ const StoredTurn = z.object({
   source: z.enum(["game", "dashboard", "speakFirst", "keepsake"]).default("game"),
   /** A near-duplicate reply: shown in the transcript, excluded from the model's context. */
   repeat: z.boolean().optional(),
+  /**
+   * The exchange read the player's accounts, and the widest audience those accounts allow. Prompts
+   * replay it there only; the notes, summary and card passes skip it, so nothing from their mail
+   * becomes a permanent note.
+   */
+  consulted: z.enum(["local", "online"]).optional(),
 });
 export type StoredTurn = z.infer<typeof StoredTurn>;
 
@@ -213,9 +220,12 @@ export class Memory {
     return this.data.history.filter((turn) => turn.id > this.data.summarizedThrough && !turn.repeat);
   }
 
-  /** The turns after the summary for the model, oldest first: as many recent ones as fit the budget. */
-  promptTurns(budget: ContextBudget): ChatTurn[] {
-    const turns = this.#unsummarized();
+  /**
+   * The turns after the summary for the model, oldest first: as many recent ones as fit the
+   * budget. What she read from an account the player kept local is left out for an online AI.
+   */
+  promptTurns(budget: ContextBudget, audience: Audience): ChatTurn[] {
+    const turns = this.#unsummarized().filter((turn) => audience === "local" || turn.consulted !== "local");
     let tokens = 0;
     let start = turns.length;
     while (start > 0) {
@@ -241,12 +251,13 @@ export class Memory {
   }
 
   /** Records an exchange. Returns false if the reply was a near-repeat (kept out of the context). */
-  async addExchange(user: string | null, reply: string, source: StoredTurn["source"]): Promise<boolean> {
+  async addExchange(user: string | null, reply: string, source: StoredTurn["source"], consulted: Audience | null = null): Promise<boolean> {
     const at = new Date().toISOString();
     const repeat = isRepeat(reply, this.recentReplies(5));
+    const flags = consulted ? { consulted } : {};
     let id = this.#lastId();
-    if (user) this.data.history.push({ id: ++id, role: "user", content: user, at, source });
-    this.data.history.push({ id: ++id, role: "assistant", content: reply, at, source, ...(repeat ? { repeat } : {}) });
+    if (user) this.data.history.push({ id: ++id, role: "user", content: user, at, source, ...flags });
+    this.data.history.push({ id: ++id, role: "assistant", content: reply, at, source, ...flags, ...(repeat ? { repeat } : {}) });
     this.data.history = this.data.history.slice(-STORED_TURNS);
     await this.save();
     return !repeat;
@@ -264,7 +275,8 @@ export class Memory {
   /**
    * The oldest turns to fold into the summary, once the turns after it pass `compactAt` (or
    * whenever there's more than `keep`, if forced). Ends on one of her replies, so an exchange is
-   * never split between the summary and the verbatim turns.
+   * never split between the summary and the verbatim turns. Exchanges that read the player's
+   * accounts are folded past without being read: `through` covers them, `turns` leaves them out.
    */
   compaction(budget: ContextBudget, force = false): UpkeepJob | null {
     const pending = this.#unsummarized();
@@ -280,7 +292,7 @@ export class Memory {
     }
     while (chunk.at(-1)?.role === "user") chunk.pop();
     const last = chunk.at(-1);
-    return last ? { turns: chunk, through: last.id, revision: this.#revision } : null;
+    return last ? { turns: chunk.filter((turn) => !turn.consulted), through: last.id, revision: this.#revision } : null;
   }
 
   /**
@@ -306,10 +318,13 @@ export class Memory {
     await this.save();
   }
 
-  /** Exchanges the notes haven't been updated from, once there are at least `minUserMessages` of the player's messages. */
+  /**
+   * Exchanges the notes haven't been updated from, once there are at least `minUserMessages` of the
+   * player's messages. Exchanges that read their accounts count for nothing and are left out.
+   */
   learning(minUserMessages: number): UpkeepJob | null {
     const pending = this.data.history.filter((turn) => turn.id > this.data.learnedThrough && !turn.repeat);
-    if (pending.filter((turn) => turn.role === "user").length < minUserMessages) return null;
+    if (pending.filter((turn) => turn.role === "user" && !turn.consulted).length < minUserMessages) return null;
     const chunk: StoredTurn[] = [];
     let size = 0;
     for (const turn of pending) {
@@ -317,7 +332,7 @@ export class Memory {
       chunk.push(turn);
       size += estimateTokens(turn.content);
     }
-    return { turns: chunk, through: chunk.at(-1)!.id, revision: this.#revision };
+    return { turns: chunk.filter((turn) => !turn.consulted), through: chunk.at(-1)!.id, revision: this.#revision };
   }
 
   /**
@@ -359,9 +374,10 @@ export class Memory {
     await this.save();
   }
 
+  /** For the cards: what the player said lately, except when they were asking about their accounts. */
   recentUserMessages(count: number): string[] {
     return this.data.history
-      .filter((turn) => turn.role === "user")
+      .filter((turn) => turn.role === "user" && !turn.consulted)
       .slice(-count)
       .map((turn) => turn.content);
   }

@@ -234,6 +234,15 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * Windows build, reading a missing file through Bun.file() never settled, and the process quietly
  * exited on first run.
  */
+/** JSON from a file or a wire, or null: the caller parses the result with its schema, so a parser message never reaches a log. */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 export async function readTextFile(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");

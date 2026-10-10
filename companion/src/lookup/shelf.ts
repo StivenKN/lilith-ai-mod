@@ -1,11 +1,16 @@
 // Where a turn looks things up. Brain opens a shelf per turn and asks it three things: which
-// facets the model may consult (the rules in the system prompt), whether a reply asked for a
-// lookup, and what the lookup found.
+// facets the model may consult (the rules in the system prompt and the tools), whether a reply
+// asked for a lookup, and what the lookup found. Behind it sit the privacy gate, tool and tag
+// parsing, the fan-out across accounts, timeouts, budgets, retries and failure capture.
 
+import { z } from "zod";
 import { errorMessage, type Log } from "../log.ts";
-import type { ChatResult, ToolSpec } from "../providers/types.ts";
+import type { ChatResult, ToolCall, ToolSpec } from "../providers/types.ts";
 import { createSearcher, type SearchResult, type SearchSettings } from "../search.ts";
-import { facets, type Facet } from "./facets.ts";
+import { facets, privateFacets, type Facet, type PrivateFacet } from "./facets.ts";
+import type { Audience, Gate } from "./gate.ts";
+import { foldWords, parseQuery } from "./query.ts";
+import { LookupError, type Finding, type Hit, type Problem, type Source } from "./sources.ts";
 
 const offered: unique symbol = Symbol("offered");
 
@@ -16,20 +21,63 @@ export interface LookupRequest {
   readonly query: string;
 }
 
+export interface Section {
+  facet: PrivateFacet;
+  findings: readonly Finding[];
+  /** The top finding read in full, within the budget, when its source can read. */
+  expanded: { title: string; text: string } | null;
+  /** Accounts that were asked and failed, named so she can say so. */
+  problems: readonly { label: string; problem: Problem }[];
+}
+
 export type Found =
   | { kind: "results"; query: string; results: readonly SearchResult[] }
-  | { kind: "failed"; query: string };
+  | { kind: "failed"; query: string }
+  /** `audience`: the widest one every account asked allows, so the exchange is replayed only there. */
+  | { kind: "consulted"; query: string; sections: readonly Section[]; audience: Audience };
 
 export interface Shelf {
-  /** Settings only, never content, so the system prompt stays the same across the turn. */
+  /** Settings, accounts and origin only, never content, so the system prompt stays the same across the turn. */
   readonly facets: readonly Facet[];
-  /** Empty while only the web is offered, since it keeps its tag; a private facet is offered as a tool. */
+  /** One `{query}` tool per offered facet once a private facet is offered; empty while the web keeps its tag. */
   readonly tools: readonly ToolSpec[];
-  /** The lookup a reply asked for, or null when it asked for none or none was offered. */
-  requestIn(step: Pick<ChatResult, "text">): LookupRequest | null;
-  /** Runs the lookup under the turn's signal. Never throws: a failure comes back as `failed`. */
-  look(request: LookupRequest, signal?: AbortSignal): Promise<Found>;
+  /** The lookup a reply asked for, by tool call first and then by the web tag; null when none, or none was offered. */
+  requestIn(step: Pick<ChatResult, "text"> & { calls?: readonly ToolCall[] }): LookupRequest | null;
+  /** Runs the lookup under the turn's signal. Never throws: a failure comes back as `failed` or as a named problem. */
+  look(request: LookupRequest, said: string, signal?: AbortSignal): Promise<Found>;
+  /** The same shelf for a model that rejected the tools: the web keeps its tag, and her accounts stay closed this turn. */
+  withoutTools(): Shelf;
 }
+
+/** How much of what she found fits in the note: a 4B on an 8k context reads less than an online model. */
+export const LOOKUP_BUDGET = { local: 1500, online: 4000 } as const satisfies Record<Audience, number>;
+const SOURCE_TIMEOUT_MS = 10_000;
+const MAX_FINDINGS = 5;
+/** Caps per field, so one 48 KB subject cannot take the whole budget. */
+const TITLE_MAX_CHARS = 200;
+const META_MAX_CHARS = 120;
+const EXCERPT_MAX_CHARS = 300;
+/** Less room than this for the full text, and only the findings go in. */
+const MIN_EXPANSION_CHARS = 80;
+
+/** Newest first, except the calendar: what is coming up, soonest first, and only then the most recent past. */
+function order(facet: Facet, now: number): (a: Hit, b: Hit) => number {
+  if (facet !== "calendar") return (a, b) => b.at - a.at;
+  return (a, b) => {
+    const [aUp, bUp] = [a.at >= now, b.at >= now];
+    if (aUp !== bUp) return aUp ? -1 : 1;
+    return aUp ? a.at - b.at : b.at - a.at;
+  };
+}
+
+const QueryInput = z.object({ query: z.string().trim().min(1).max(200) });
+
+/** The facet's tool, naming the connected services ("(Gmail)") where its measured description has a slot for them. */
+export const lookupTool = (facet: Facet, services: readonly string[] = []): ToolSpec => ({
+  name: facets[facet].tool,
+  description: facets[facet].description.replace("{services}", services.length > 0 ? ` (${services.join(", ")})` : ""),
+  input: QueryInput,
+});
 
 /** Matches the model's request for a search, in English or Spanish: `[search: weather in Lima]`. */
 const TAG = new RegExp(`[[(（【]\\s*(?:${facets.web.tag.join("|")})\\s*[:：]\\s*([^\\]）】\\n]{2,200}?)\\s*[\\])）】]`, "i");
@@ -42,27 +90,152 @@ function tagQuery(text: string): string | null {
   return TAG.exec(cleaned)?.[1]?.trim().replace(/^["“«]|["”»]$/g, "") || null;
 }
 
-const closed: Shelf = { facets: [], tools: [], requestIn: () => null, look: async ({ query }) => ({ kind: "failed", query }) };
+const closed: Shelf = { facets: [], tools: [], requestIn: () => null, look: async ({ query }) => ({ kind: "failed", query }), withoutTools: () => closed };
 
-export function openShelf({ search, log }: { search: SearchSettings; log: Log }): Shelf {
+export function openShelf(options: {
+  gate: Gate;
+  /** Whether the model takes tools. False keeps today's web tag and offers no private facet (P-SURFACE run 4). */
+  tools: boolean;
+  search: SearchSettings;
+  /** What the gate let through for this turn (`AccountStore.sources`), gathered once per turn. */
+  sources: readonly Source[];
+  log: Log;
+}): Shelf {
+  const { gate, tools, search, log } = options;
   const searcher = createSearcher(search);
-  if (!searcher) return closed;
+  const sources = tools ? options.sources : [];
+  const privates = privateFacets.filter((facet) => sources.some((source) => source.facet === facet));
+  const offeredFacets: Facet[] = [...(searcher ? ["web" as const] : []), ...privates];
+  if (offeredFacets.length === 0) return closed;
+  // One wire per session: once a private facet is offered, the web is a tool too and its tag rule leaves the prompt.
+  const servicesOf = (facet: Facet) => [...new Set(sources.filter((source) => source.facet === facet).map((source) => source.service))];
+  const toolList = privates.length ? offeredFacets.map((facet) => lookupTool(facet, servicesOf(facet))) : [];
+  const facetOfTool = new Map<string, Facet>(offeredFacets.map((facet) => [facets[facet].tool, facet]));
+  const mint = (facet: Facet, query: string): LookupRequest => ({ [offered]: true, facet, query });
   return {
-    facets: ["web"],
-    tools: [],
+    facets: offeredFacets,
+    tools: toolList,
     requestIn(step) {
-      const query = tagQuery(step.text);
-      return query ? { [offered]: true, facet: "web", query } : null;
-    },
-    async look(request, signal) {
-      try {
-        const results = await searcher(request.query, signal);
-        log.info(`web search (${search.mode}) "${request.query}": ${results.length} result(s)`);
-        return { kind: "results", query: request.query, results };
-      } catch (error) {
-        log.warn(`web search (${search.mode}) "${request.query}" failed: ${errorMessage(error)}`);
-        return { kind: "failed", query: request.query };
+      for (const call of step.calls ?? []) {
+        const facet = toolList.length ? facetOfTool.get(call.name) : undefined;
+        if (!facet || call.error) continue;
+        const input = QueryInput.safeParse(call.input);
+        if (input.success) return mint(facet, input.data.query);
       }
+      const query = searcher ? tagQuery(step.text) : null;
+      return query ? mint("web", query) : null;
     },
+    async look(request, said, signal) {
+      if (request.facet === "web") {
+        if (!searcher) return { kind: "failed", query: request.query };
+        try {
+          const results = await searcher(request.query, signal);
+          log.info(`web search (${search.mode}) "${request.query}": ${results.length} result(s)`);
+          return { kind: "results", query: request.query, results };
+        } catch (error) {
+          log.warn(`web search (${search.mode}) "${request.query}" failed: ${errorMessage(error)}`);
+          return { kind: "failed", query: request.query };
+        }
+      }
+      if (!privates.includes(request.facet)) return { kind: "failed", query: request.query };
+      const asked = sources.filter((source) => source.facet === request.facet);
+      const section = await consult({ sources: asked, facet: request.facet, query: request.query, said, budget: LOOKUP_BUDGET[gate.audience], log, ...(signal ? { signal } : {}) });
+      return { kind: "consulted", query: request.query, sections: [section], audience: asked.every((source) => source.audience === "online") ? "online" : "local" };
+    },
+    withoutTools: () => openShelf({ ...options, tools: false }),
   };
 }
+
+/** Examples copied from the tool description instead of a query. */
+const PLACEHOLDER = /\b(?:the words to (?:look|search) for|consulta breve|short query|from:name)\b/i;
+/** Words of the player's message that would match everything in an OR query: articles, pronouns, prepositions and the like, in both languages. */
+const STOP_WORDS = new Set([
+  "a", "al", "algo", "ante", "como", "con", "cual", "cuando", "de", "del", "desde", "donde", "el", "ella", "ellos", "en", "entre", "es", "esa", "ese", "esta", "este", "esto", "fue", "ha", "hay", "la", "las", "le", "les", "lo", "los", "me", "mi", "mis", "muy", "nada", "ni", "no", "nos", "o", "para", "pero", "por", "que", "se", "si", "sin", "sobre", "su", "sus", "te", "ti", "tu", "tus", "un", "una", "unas", "unos", "y", "ya", "yo",
+  "about", "an", "and", "any", "are", "as", "at", "be", "been", "by", "can", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "him", "his", "how", "i", "if", "in", "is", "it", "its", "my", "not", "of", "on", "or", "our", "she", "so", "that", "the", "their", "them", "there", "they", "this", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "will", "with", "would", "yet", "you", "your",
+]);
+
+/** A query the model made up rather than took from the player: a copied placeholder, or an operator whose value they never said (`from:work@example.com` for "did the landlord reply?"). `from:laura` for "what did Laura write?" is theirs. */
+function invented(query: string, said: string): boolean {
+  if (PLACEHOLDER.test(query)) return true;
+  const theirs = new Set(foldWords(said));
+  return [...query.matchAll(/\b\w+:(\S+)/g)].some(([, value = ""]) => !foldWords(value).every((word) => theirs.has(word)));
+}
+
+/**
+ * Looks in every source of one facet, in parallel and under the turn's signal with 10 s each,
+ * merges the findings, reads the top one in full within the budget, and names the accounts that
+ * failed. Never throws, and never logs the query or what was found. An invented query that finds
+ * nothing is tried once more with the player's own content words, any of them: Gmail ANDs words,
+ * so their whole sentence would find nothing either.
+ */
+export async function consult(options: { sources: readonly Source[]; facet: PrivateFacet; query: string; said?: string; budget: number; signal?: AbortSignal; log: Log }): Promise<Section> {
+  const started = performance.now();
+  let section = await gather(options);
+  const { said } = options;
+  const own = said && section.findings.length === 0 && section.problems.length === 0 && invented(options.query, said) ? foldWords(said).filter((word) => !STOP_WORDS.has(word)) : [];
+  if (own.length > 0) {
+    options.log.info(`${options.facet} lookup found nothing for an invented query; trying the player's words`);
+    section = await gather({ ...options, query: own.join(" OR ") });
+  }
+  options.log.info(`${options.facet} lookup: ${section.findings.length} finding(s) from ${options.sources.length} account(s) in ${Math.round(performance.now() - started)} ms${section.expanded ? ", top read in full" : ""}${section.problems.length ? `, ${section.problems.length} failed` : ""}`);
+  return section;
+}
+
+async function gather({ sources, facet, query, budget, signal, log }: Parameters<typeof consult>[0]): Promise<Section> {
+  const parsed = parseQuery(query);
+  const perSource = () => {
+    const timeout = AbortSignal.timeout(SOURCE_TIMEOUT_MS);
+    return { timeout, signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
+  };
+  const problem = (error: unknown, timeout: AbortSignal): Problem => (error instanceof LookupError ? error.problem : timeout.aborted || signal?.aborted ? "timeout" : "unreachable");
+  const answers = await Promise.all(sources.map(async (source) => {
+    const { timeout, signal } = perSource();
+    try {
+      return { source, hits: await source.search(parsed, signal) };
+    } catch (error) {
+      log.warn(`${facet} lookup: ${source.id} failed: ${errorMessage(error)}`);
+      return { source, problem: problem(error, timeout) };
+    }
+  }));
+  const problems = answers.flatMap((answer) => ("problem" in answer ? [{ label: answer.source.label, problem: answer.problem }] : []));
+  const byRelevance = order(facet, Date.now());
+  const hits = answers
+    .flatMap((answer) => ("hits" in answer ? answer.hits.map((hit) => ({ source: answer.source, hit })) : []))
+    .sort((a, b) => byRelevance(a.hit, b.hit))
+    .slice(0, MAX_FINDINGS);
+  // The budget covers the whole section: findings are listed while they fit, and the full text gets what is left.
+  const kept: Array<{ source: Source; hit: Hit; finding: Finding }> = [];
+  let used = 0;
+  for (const { source, hit } of hits) {
+    const finding = shape(hit);
+    const size = finding.title.length + finding.meta.length + finding.excerpt.length + 8;
+    if (used + size > budget) break;
+    kept.push({ source, hit, finding });
+    used += size;
+  }
+  let expanded: Section["expanded"] = null;
+  const top = kept[0];
+  const room = budget - used;
+  if (top?.hit.read && room >= MIN_EXPANSION_CHARS) {
+    const { timeout, signal } = perSource();
+    try {
+      const text = clean(await top.hit.read(signal), true).slice(0, room);
+      if (text) expanded = { title: top.finding.title, text };
+    } catch (error) {
+      log.warn(`${facet} lookup: could not read the top finding from ${top.source.id}: ${errorMessage(error)}`);
+      problems.push({ label: top.source.label, problem: error instanceof LookupError ? error.problem : timeout.aborted ? "timeout" : "unreadable" });
+    }
+  }
+  return { facet, findings: kept.map(({ finding }) => finding), expanded, problems };
+}
+
+/**
+ * No URLs, no square brackets (the note's fence, which nothing from their accounts may close), and
+ * no runs of whitespace; `keepLines` leaves paragraph breaks in a full text.
+ */
+function clean(text: string, keepLines = false): string {
+  const fenced = text.replace(/https?:\/\/[^\s)>\]]+/gi, "(link)").replace(/\[/g, "(").replace(/\]/g, ")");
+  return (keepLines ? fenced.replace(/[ \t\r\f\v]+/g, " ").replace(/ ?\n ?/g, "\n").replace(/\n{3,}/g, "\n\n") : fenced.replace(/\s+/g, " ")).trim();
+}
+
+const shape = (hit: Hit): Finding => ({ title: clean(hit.title).slice(0, TITLE_MAX_CHARS), meta: clean(hit.meta).slice(0, META_MAX_CHARS), excerpt: clean(hit.excerpt).slice(0, EXCERPT_MAX_CHARS) });

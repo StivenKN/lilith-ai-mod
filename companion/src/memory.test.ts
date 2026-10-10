@@ -45,7 +45,7 @@ describe("Memory", () => {
   test("the model sees the turns after the summary, as many recent ones as fit the window", async () => {
     const memory = await Memory.load(await path());
     await chatted(memory);
-    const window = memory.promptTurns(tiny);
+    const window = memory.promptTurns(tiny, "local");
     expect(window.at(-1)?.content).toBe(replies[9]);
     expect(window.reduce((sum, turn) => sum + estimateTokens(turn.content), 0)).toBeLessThanOrEqual(tiny.window);
     expect(memory.overdue(tiny)).toBe(true);
@@ -53,7 +53,7 @@ describe("Memory", () => {
     const job = memory.compaction(tiny)!;
     expect(await memory.applySummary(job, ["Daniel contó que es enfermero."])).toBe(true);
     expect(memory.summary).toBe("- Daniel contó que es enfermero.");
-    expect(memory.promptTurns({ ...tiny, window: 9999 })[0]?.content).toBe(memory.history.find((turn) => turn.id === job.through + 1)?.content);
+    expect(memory.promptTurns({ ...tiny, window: 9999 }, "local")[0]?.content).toBe(memory.history.find((turn) => turn.id === job.through + 1)?.content);
   });
 
   test("compaction waits for the threshold, then folds the oldest turns down to `keep`, ending on her reply", async () => {
@@ -103,6 +103,30 @@ describe("Memory", () => {
     }
     expect(memory.summary.split("\n")).toHaveLength(SUMMARY_MAX_LINES);
     expect(memory.summary).not.toContain("enfermero");
+  });
+
+  test("an exchange that read the player's accounts is replayed in the prompt but never learned, summarized or put on a card", async () => {
+    const memory = await Memory.load(await path());
+    await memory.addExchange("¿me respondió el casero?", "Sí, dice que el pago del arriendo llegó.", "game", "local");
+    expect(memory.promptTurns(tiny, "local").map((turn) => turn.content)).toContain("Sí, dice que el pago del arriendo llegó.");
+    expect(memory.learning(1)).toBeNull();
+    expect(memory.compaction({ ...tiny, keep: 0 }, true)).toMatchObject({ turns: [], through: 2 });
+    await memory.addExchange("mi gata se llama Mochi", "Qué nombre tan lindo.", "game");
+    const job = memory.learning(1)!;
+    expect(job.turns.map((turn) => turn.content)).toEqual(["mi gata se llama Mochi", "Qué nombre tan lindo."]);
+    expect(job.through).toBe(4);
+    expect(memory.recentUserMessages(8)).toEqual(["mi gata se llama Mochi"]);
+    expect(memory.history.filter((turn) => turn.consulted)).toHaveLength(2);
+  });
+
+  test("what she read from an account the player kept local never reaches an online AI; a shared one is replayed anywhere", async () => {
+    const memory = await Memory.load(await path());
+    await memory.addExchange("¿me respondió el casero?", "Sí, dice que el pago del arriendo llegó.", "game", "local");
+    await memory.addExchange("¿y Laura?", "Laura te mandó las fotos del viaje.", "game", "online");
+    await memory.addExchange("gracias", "De nada.", "game");
+    const online = memory.promptTurns(tiny, "online").map((turn) => turn.content);
+    expect(online).toEqual(["¿y Laura?", "Laura te mandó las fotos del viaje.", "gracias", "De nada."]);
+    expect(memory.promptTurns(tiny, "local")).toHaveLength(6);
   });
 
   test("reads the summary lines the model wrote, or that there was nothing worth keeping", () => {

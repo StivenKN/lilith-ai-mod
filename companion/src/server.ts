@@ -8,6 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import dashboard from "../web/index.html";
+import { AccountId } from "./accounts/account.ts";
+import { PendingFlows } from "./accounts/flows.ts";
+import { catalog, catalogEntry, googleClient } from "./accounts/registry.ts";
+import type { AccountStore } from "./accounts/store.ts";
 import type { Brain } from "./brain.ts";
 import type { BrowserHub, SocketData } from "./browser/hub.ts";
 import { DASHBOARD_PORTS } from "./browser/shared.ts";
@@ -16,6 +20,8 @@ import { buildReport } from "./diagnostics.ts";
 import { findGameDirs, inspectGame, install, payloadStatus, steamRoots, uninstall } from "./installer.ts";
 import { languages } from "./languages.ts";
 import { errorMessage, type Logger } from "./log.ts";
+import { privateFacets } from "./lookup/facets.ts";
+import { consult, LOOKUP_BUDGET } from "./lookup/shelf.ts";
 import { MAX_PICTURE_BYTES, type Keepsake, type Keepsakes } from "./keepsakes.ts";
 import { SUMMARY_MAX_CHARS, type Memory } from "./memory.ts";
 import type { DataPaths } from "./paths.ts";
@@ -38,6 +44,7 @@ export interface AppContext {
   config: ConfigStore;
   memory: Memory;
   keepsakes: Keepsakes;
+  accounts: AccountStore;
   logger: Logger;
   brain: Brain;
   /** The browser extension's connections (served on /api/browser). */
@@ -67,7 +74,7 @@ const ProviderInput = z.object({
   apiKey: z.string().optional(),
 });
 
-export function createProcedures(ctx: AppContext) {
+export function createProcedures(ctx: AppContext, flows: PendingFlows) {
   const log = ctx.logger.scope("dashboard");
   const providerSettings = (input: z.output<typeof ProviderInput>) => ({
     preset: input.preset,
@@ -212,6 +219,45 @@ export function createProcedures(ctx: AppContext) {
 
     writeCard: procedure(none, async () => ctx.brain.writeCard("manual")),
 
+    /** `toolsSupported` is null until a turn or a check has asked the model; private facets need tools. */
+    accounts: procedure(none, async () => ({
+      accounts: ctx.accounts.list(),
+      catalog,
+      googleConfigured: googleClient() !== null,
+      toolsSupported: ctx.brain.snapshot().computer.tools ?? null,
+    })),
+
+    /** Starts a sign-in. The dashboard navigates to the consent URL; Google sends the tab back to /api/accounts/callback. */
+    connectAccount: procedure(z.object({ entry: z.string(), shareOnline: z.boolean().default(false) }), async ({ entry, shareOnline }) => {
+      const item = catalogEntry(entry);
+      if (!item) throw new Error(`Unknown account kind ${entry}`);
+      return flows.start(item, shareOnline);
+    }),
+
+    updateAccount: procedure(
+      z.object({
+        id: AccountId,
+        facets: z.array(z.enum(privateFacets)).optional(),
+        policy: z.object({ enabled: z.boolean().optional(), shareOnline: z.boolean().optional() }).optional(),
+      }),
+      async ({ id, ...patch }) => ctx.accounts.update(id, patch),
+    ),
+
+    disconnectAccount: procedure(z.object({ id: AccountId }), async ({ id }) => {
+      await ctx.accounts.remove(id);
+      return { ok: true };
+    }),
+
+    /** Try it: a real lookup in every facet of the account, so the player sees what Lilith would see. */
+    tryAccount: procedure(z.object({ id: AccountId, query: z.string().trim().min(1).max(200) }), async ({ id, query }) => {
+      const sources = ctx.accounts.sourcesOf(id);
+      if (sources.length === 0) return { ok: false as const, message: translator(ctx.brain.uiLocale())("accounts.cannotOpen") };
+      const facets = privateFacets.filter((facet) => sources.some((source) => source.facet === facet));
+      const signal = AbortSignal.timeout(30_000);
+      const sections = await Promise.all(facets.map((facet) => consult({ sources: sources.filter((source) => source.facet === facet), facet, query, budget: LOOKUP_BUDGET.online, signal, log })));
+      return { ok: true as const, query, sections };
+    }),
+
     persona: procedure(none, async () => {
       const language = ctx.brain.replyLanguage();
       return { language, builtIn: defaultPersona(language), custom: ctx.config.current.persona.custom };
@@ -290,10 +336,12 @@ export interface DashboardServer {
 
 export async function startServer(ctx: AppContext): Promise<DashboardServer> {
   const token = crypto.randomUUID().replace(/-/g, "");
-  const procedures = createProcedures(ctx);
   const log = ctx.logger.scope("server");
   let allowedHosts = new Set<string>();
   let voiceInstall: Promise<void> | null = null;
+  let listening = 0;
+  const flows = new PendingFlows({ store: ctx.accounts, port: () => listening, log: ctx.logger.scope("accounts"), tr: () => translator(ctx.brain.uiLocale()) });
+  const procedures = createProcedures(ctx, flows);
 
   const hostOk = (request: Request) => allowedHosts.has(request.headers.get("host") ?? "");
   const authed = (request: Request) =>
@@ -336,6 +384,9 @@ export async function startServer(ctx: AppContext): Promise<DashboardServer> {
         }
       },
     },
+    // Google sends the player's tab here. No cookie arrives on this request, so the flow's own
+    // state and PKCE verifier authenticate it (plus the Host check against rebinding).
+    "/api/accounts/callback": (request: Request) => (hostOk(request) ? flows.finish(new URL(request.url)) : new Response("Forbidden host", { status: 403 })),
     // Only ids of stored pictures resolve, so nothing outside the keepsakes folder can be served.
     "/api/pictures/:file": async (request: Request & { params: { file: string } }) => {
       if (!authed(request)) return deny(request);
@@ -354,12 +405,14 @@ export async function startServer(ctx: AppContext): Promise<DashboardServer> {
           const stopBrain = ctx.brain.onEvent((event) => send("brain", event));
           const stopUpdate = ctx.updater.onChange(() => send("update", ctx.updater.status));
           const stopConfig = ctx.config.onChange(() => send("config", null));
+          const stopAccounts = ctx.accounts.onChange(() => send("accounts", null));
           const ping = setInterval(() => controller.enqueue(": ping\n\n"), 20_000);
           cleanup = () => {
             stopLogs();
             stopBrain();
             stopUpdate();
             stopConfig();
+            stopAccounts();
             clearInterval(ping);
           };
           request.signal.addEventListener("abort", () => {
@@ -466,6 +519,7 @@ export async function startServer(ctx: AppContext): Promise<DashboardServer> {
       ? ctx.browser.upgrade(request, server, hostOk(request))
       : new Response("Not found", { status: 404 }),
   }), (message) => log.debug(message));
+  listening = port;
   allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   log.info(`dashboard listening on http://127.0.0.1:${port}`);
   return { port, loginUrl: `http://127.0.0.1:${port}/?t=${token}`, stop: () => void server.stop(true) };

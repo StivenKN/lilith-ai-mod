@@ -41,6 +41,18 @@ start. Load that folder in Chrome (chrome://extensions → Developer mode → Lo
 its reload button after changing the extension. With `LILITH_AI_FAKE_DESKTOP=1`, browser turns work
 on any OS; send `!b https://example.com` to the mock AI to watch one.
 
+Connected accounts: the Google sign-in needs the mod's OAuth client, which the release build gets
+from repository secrets (see `docs/GOOGLE.md`). For development, use the fake Google instead:
+
+```sh
+bun scripts/mock-google.ts                                   # consent page, tokens and fixtures on :11556
+LILITH_AI_GOOGLE_URL=http://127.0.0.1:11556 LILITH_GOOGLE_CLIENT_ID=mock LILITH_GOOGLE_CLIENT_SECRET=mock bun src/main.ts --dev
+```
+
+Then connect through the dashboard, and send `!mail laura` to the mock AI to watch a lookup. The
+same two client variables, set when running `bun build.ts`, bake a real client into the exe.
+`scripts/eval-lookups.ts` measures how a model routes questions to the lookup tools.
+
 Voice: the Voice tab downloads the engines on Windows only. Elsewhere, point the companion at
 engines you installed yourself, then download voices and models from the tab as usual:
 

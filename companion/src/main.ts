@@ -5,6 +5,7 @@
 
 import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { AccountStore } from "./accounts/store.ts";
 import { Brain } from "./brain.ts";
 import { extensionFiles } from "./browser/embedded.ts";
 import { BrowserHub } from "./browser/hub.ts";
@@ -82,6 +83,8 @@ async function main(): Promise<void> {
   await config.watch(logger.scope("config"));
   const memory = await Memory.load(paths.memory, (message) => log.warn(message));
   const keepsakes = await Keepsakes.load(paths.keepsakes, paths.pictures, (message) => log.warn(message));
+  const accounts = await AccountStore.load(paths.accounts, logger.scope("accounts"), (secret) => logger.addSecret(secret));
+  accounts.watch();
   const voice = new Voice(paths.voice, logger.scope("voice"));
   // The extension folder the player loads in their browser, kept current. Without it she just has no browser tool.
   const pairing = await installExtension(paths.browserExtension, VERSION, extensionFiles, logger.scope("browser"), mode === "dev")
@@ -103,6 +106,7 @@ async function main(): Promise<void> {
     onFatal: (reason) => shutdown(2, reason),
     systemLocale: Intl.DateTimeFormat().resolvedOptions().locale,
     browser,
+    accounts,
   });
 
   const exeDir = dirname(process.execPath);
@@ -120,6 +124,7 @@ async function main(): Promise<void> {
     config,
     memory,
     keepsakes,
+    accounts,
     logger,
     brain,
     browser,
@@ -147,6 +152,7 @@ async function main(): Promise<void> {
     await brain.stop();
     updater.stop();
     config.close();
+    accounts.close();
     server.stop();
     await rm(paths.instance, { force: true });
     process.exit(code);

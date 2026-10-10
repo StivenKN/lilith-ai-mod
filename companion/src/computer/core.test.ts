@@ -178,7 +178,10 @@ describe("computer actions", () => {
     const tagged = '[happy] On it!\n<tool_call>\n{"name": "computer_use", "arguments": {"action": "left_click", "coordinate": [10, 20]}}\n</tool_call>';
     expect(toolCallsInText(tagged, tools)).toEqual({ calls: [{ name: "computer_use", input: { action: "left_click", coordinate: [10, 20] } }], text: "[happy] On it!" });
     expect(toolCallsInText('{"name": "open_app", "arguments": "{\\"name\\": \\"Notepad\\"}"}', tools).calls).toEqual([{ name: "open_app", input: { name: "Notepad" } }]);
-    expect(toolCallsInText("<tool_call>{oops</tool_call>", tools).calls[0]).toHaveProperty("error");
+    expect(toolCallsInText("<tool_call>{oops</tool_call>", tools).calls[0]).toMatchObject({ name: "computer_use", error: expect.stringContaining("Malformed") });
+    // A turn that offers only lookup tools charges a malformed call to its first tool, never to computer_use.
+    expect(toolCallsInText("<tool_call>{oops</tool_call>", ["email", "files"]).calls[0]).toMatchObject({ name: "email", error: expect.stringContaining("Malformed") });
+    expect(toolCallsInText("<tool_call>{oops</tool_call>", []).calls[0]).toMatchObject({ name: "" });
     for (const reply of ['{"name": "Lilith", "arguments": 1}', "[happy] Hi!"]) expect(toolCallsInText(reply, tools)).toEqual({ calls: [], text: reply });
   });
 });

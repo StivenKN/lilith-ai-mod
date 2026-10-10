@@ -3,6 +3,8 @@
 //   bun scripts/mock-llm.ts [port]        (default 11555)
 // Then pick "Custom" with http://127.0.0.1:11555/v1, or Ollama with http://127.0.0.1:11555.
 // With web search on, messages that start with "?" make it ask for a search, then quote the top result.
+// With an account connected (the email, files or calendar tools offered), "!mail <q>", "!files <q>"
+// and "!cal <q>" call that tool with q; the tool-free follow-up quotes the first finding's title.
 // With computer tools, messages starting with "!" open an example URL, then return a final reply.
 // With the browser extension connected, "!b <url>" plays a small model using the browser tool: it
 // opens the page, then picks elements by their numbers from each page it gets back (accepts a
@@ -36,7 +38,8 @@ const reply = (system: string, noted: string, user: string) => {
       : "I kept thinking about what you showed me, and it made me smile. Thank you for sharing it with me. — Lilith";
   }
   const searchAllowed = /\[(search|buscar): /.test(system);
-  const topResult = /^1\. (.+)$/m.exec(noted)?.[1];
+  // Web results read "1. Title (host): snippet"; account findings "1. Title (meta): excerpt". Quote the title.
+  const topResult = /^1\. (.+?)(?: \(|: |$)/m.exec(noted)?.[1];
   if (topResult) return `[happy] I looked it up: ${topResult.slice(0, 160)}`;
   if (searchAllowed && user.startsWith("?")) return `[search: ${user.slice(1).trim()}]`;
   const list = es ? replies.es : replies.en;
@@ -45,6 +48,15 @@ const reply = (system: string, noted: string, user: string) => {
 
 type Message = { role: string; content: unknown };
 type Call = { name: string; arguments: Record<string, unknown> };
+
+const lookupTools = new Map([["mail", "email"], ["files", "files"], ["cal", "calendar"]]);
+
+/** "!mail laura" becomes an email tool call, when that tool is offered this turn. */
+function lookupStep(tools: unknown, user: string): Call | null {
+  const asked = /^!(\w+)\s+(.+)$/s.exec(user);
+  const name = asked && lookupTools.get(asked[1]!);
+  return name && JSON.stringify(tools ?? []).includes(`"${name}"`) ? { name, arguments: { query: asked[2]!.trim() } } : null;
+}
 
 /** The next browser call of a "!b" run, or null once it has read a page and should reply. */
 function browserStep(messages: Message[]): Call | null {
@@ -81,7 +93,8 @@ const server = Bun.serve({
     const browsing = JSON.stringify(body.tools ?? []).includes('"browser"') ? browserStep(messages) : null;
     const read = /^!b /m.test(messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n"))
       ? /Text from where the page is scrolled to:\n(.+)/.exec(String(messages.at(-1)?.content ?? ""))?.[1] : undefined;
-    const toolRequest = !!body.tools && user.startsWith("!") && !messages.some((message) => message.role === "tool");
+    const lookup = lookupStep(body.tools, user);
+    const toolRequest = !!body.tools && !lookup && user.startsWith("!") && !messages.some((message) => message.role === "tool");
     const toolReply = messages.some((message) => message.role === "tool");
     const tool = { name: "open_url", arguments: { url: "https://example.com/" } };
     await Bun.sleep(600);
@@ -91,6 +104,7 @@ const server = Bun.serve({
         return Response.json({ data: [{ id: "mock-lilith" }, { id: "mock-lilith-large" }] });
       case "/v1/chat/completions":
         if (body.model === "broken") return Response.json({ error: { message: "The model `broken` does not exist" } }, { status: 404 });
+        if (lookup) return Response.json({ model: body.model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: `mock-${crypto.randomUUID()}`, type: "function", function: { name: lookup.name, arguments: JSON.stringify(lookup.arguments) } }] } }] });
         if (browsing) return Response.json({ model: body.model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: `mock-${crypto.randomUUID()}`, type: "function", function: { name: browsing.name, arguments: JSON.stringify(browsing.arguments) } }] } }] });
         if (read) return Response.json({ model: body.model, choices: [{ finish_reason: "stop", message: { content: `[feliz] Listo. La página dice: ${read.slice(0, 120)}` } }] });
         if (toolRequest) return Response.json({ model: body.model, choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "mock-open", type: "function", function: { ...tool, arguments: JSON.stringify(tool.arguments) } }] } }] });
@@ -108,6 +122,7 @@ const server = Bun.serve({
         return Response.json({ capabilities: ["tools", "vision"] });
       case "/api/chat":
         if (!installed.has(String(body.model))) return Response.json({ error: `model "${String(body.model)}" not found, try pulling it first` }, { status: 404 });
+        if (lookup) return Response.json({ model: body.model, message: { content: "", tool_calls: [{ function: lookup }] }, done_reason: "stop" });
         if (browsing) return Response.json({ model: body.model, message: { content: "", tool_calls: [{ function: browsing }] }, done_reason: "stop" });
         if (read) return Response.json({ model: body.model, message: { content: `[feliz] Listo. La página dice: ${read.slice(0, 120)}` }, done_reason: "stop" });
         if (toolRequest) return Response.json({ model: body.model, message: { content: "", tool_calls: [{ function: tool }] }, done_reason: "stop" });

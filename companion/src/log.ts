@@ -25,6 +25,11 @@ const SECRET_PATTERNS = [
   /xai-[A-Za-z0-9]{20,}/g,
   /(Bearer\s+)[A-Za-z0-9._~+/-]{12,}/gi,
   /([?&](?:key|token|t)=)[A-Za-z0-9._-]{8,}/gi,
+  // Google: access tokens, refresh tokens, client secrets, and the OAuth query parameters.
+  /ya29\.[A-Za-z0-9._-]{12,}/g,
+  /1\/\/[A-Za-z0-9._-]{12,}/g,
+  /GOCSPX-[A-Za-z0-9_-]{8,}/g,
+  /((?:code|state|access_token|refresh_token|client_secret)=)[^&\s"']+/gi,
 ];
 
 export class Logger {
