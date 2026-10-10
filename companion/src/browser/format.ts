@@ -1,6 +1,7 @@
 // The page as the model reads it after each browser action: its tabs, its address and its
 // elements, each with a number. Sized for a 4B model with an 8k context: about 2,000 characters,
-// an open dialog first (it blocks everything else), then what's on screen, then what's further down.
+// an open dialog first (it blocks everything else), then what's on screen (the page's content
+// before the site's menus), then what's further down.
 
 import type { Look, RawElement } from "./protocol.ts";
 import { isDashboard } from "./shared.ts";
@@ -142,28 +143,33 @@ export function formatLook(look: Look, options: { read: boolean; budget?: number
     return true;
   };
   const elements = page.elements;
-  const groups: Array<{ heading: string | null; where: RawElement["where"] }> = page.dialog !== undefined
-    ? [{ heading: `A dialog is open${page.dialog ? `: ${quoted(clean(page.dialog, 80))}` : ""}. Deal with it first:`, where: "dialog" }, { heading: "Behind it:", where: "view" }]
-    : [{ heading: null, where: "view" }];
-  groups.push({ heading: "Further down:", where: "below" });
+  // The page's own content before its menus: a site's sidebar comes first in the page and would
+  // otherwise fill the budget (YouTube's lists every subscribed channel above the videos).
+  const groups: Array<{ heading: string | null; where: RawElement["where"]; menu: boolean }> = page.dialog !== undefined
+    ? [{ heading: `A dialog is open${page.dialog ? `: ${quoted(clean(page.dialog, 80))}` : ""}. Deal with it first:`, where: "dialog", menu: false }, { heading: "Behind it:", where: "view", menu: false }]
+    : [{ heading: null, where: "view", menu: false }];
+  groups.push({ heading: "Menus:", where: "view", menu: true }, { heading: "Further down:", where: "below", menu: false }, { heading: "Menus further down:", where: "below", menu: true });
   let left = 0;
+  let menus = 0;
   for (const group of groups) {
-    const members = elements.filter((element) => element.where === group.where);
+    const members = elements.filter((element) => element.where === group.where && (group.where === "dialog" || !!element.menu === group.menu));
+    const skip = (count: number) => { if (group.menu) menus += count; else left += count; };
     let headed = group.heading === null;
     for (const element of members) {
       const text = elementLine(element);
       if (!text) continue;
       if (!headed) {
-        if (!add(group.heading!)) { left += members.filter((member) => member.ref).length; break; }
+        if (!add(group.heading!)) { skip(members.filter((member) => member.ref).length); break; }
         headed = true;
       }
       if (add(text)) { if (element.ref) refs.add(element.ref); }
-      else if (element.ref) left++;
+      else if (element.ref) skip(1);
     }
   }
   const above = elements.filter((element) => element.where === "above" && element.ref).length;
-  if (!refs.size && !left) lines.push("(Nothing to click or fill on this part of the page.)");
+  if (!refs.size && !left && !menus) lines.push("(Nothing to click or fill on this part of the page.)");
   if (left) lines.push(`… and ${left} more further down: scroll down to see them.`);
+  if (menus) lines.push(`… and ${menus} more in the site's menus.`);
   if (above) lines.push(`(${above} more above: scroll up to see them.)`);
   return { text: lines.join("\n"), shown: { doc: page.doc, refs }, tabs: ids };
 }
