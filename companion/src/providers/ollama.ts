@@ -36,6 +36,17 @@ export type PullProgress = z.infer<typeof PullEvent>;
 /** Accepts what users paste: ".../v1", ".../api", trailing slashes. */
 export const ollamaBase = (url: string): string => trimSlash(url).replace(/\/(v1|api)$/i, "");
 
+type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
+
+/** A past turn as the model gets it: each computer call she made, its result (paired by tool_name), then her words. */
+export const turnMessages = (turn: ChatTurn): Message[] => [
+  ...(turn.acted ?? []).flatMap((call): Message[] => [
+    { role: "assistant", content: "", tool_calls: [{ function: { name: call.name, arguments: call.input } }] },
+    { role: "tool", tool_name: call.name, content: call.error ? "Error" : "OK" },
+  ]),
+  { role: turn.role, content: turn.content },
+];
+
 const noThinkModels = new Set<string>();
 const capabilityChecks = new Map<string, Promise<Capabilities>>();
 
@@ -115,17 +126,8 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
     },
 
     agent(request) {
-      type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
       const tools = request.tools;
-      // A past turn comes back as it happened: each call, its result (paired by tool_name), then her words.
-      const past = (turn: ChatTurn): Message[] => [
-        ...(turn.acted ?? []).flatMap((call): Message[] => [
-          { role: "assistant", content: "", tool_calls: [{ function: { name: call.name, arguments: call.input } }] },
-          { role: "tool", tool_name: call.name, content: call.error ? "Error" : "OK" },
-        ]),
-        { role: turn.role, content: turn.content },
-      ];
-      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns, tools.map((tool) => tool.name)).flatMap(past)];
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns, tools.map((tool) => tool.name)).flatMap(turnMessages)];
       let pending: ToolCall[] = [];
       let sequence = 0;
       // The latest screenshot or page. The one before is blanked: each costs as much context as a long reply.
