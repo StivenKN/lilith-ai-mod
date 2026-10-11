@@ -265,21 +265,38 @@ test("a page that didn't change is said so, and the third identical try ends the
   expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("the page did not change") });
 });
 
-test("a browser call that fails the same way is refused the second time and ends the task the third, like one that changes nothing", async () => {
+test("a browser call that fails the same way twice is refused the next time and ends the task after that, like one that changes nothing", async () => {
   const { browser, done } = fakeBrowser();
   browser.run = async (action) => {
     done.push(action);
     throw new Error("no field is focused; give the field's number as ref");
   };
   const typing = () => browse({ action: "type", text: "gatos" });
-  const { session, received } = scripted(step(typing()), step(typing()), step(typing()), step(typing()), step(typing()));
+  const { session, received } = scripted(...Array.from({ length: 6 }, () => step(typing())));
   const result = await run(session, new FakeDesktop(), { browser });
-  expect(done).toHaveLength(1);
+  expect(done).toHaveLength(2);
   expect(result).toMatchObject({ outcome: "done", text: "" });
-  expect(received[1]![0]).toMatchObject({ isError: true, text: expect.stringContaining("no field is focused") });
-  expect(received[2]![0]).toMatchObject({ isError: true, text: expect.stringContaining("you just did exactly this") });
-  expect(received[4]![0]!.text).toContain("Tell your host what you managed");
-  expect(received).toHaveLength(5);
+  expect(received[2]![0]).toMatchObject({ isError: true, text: expect.stringContaining("no field is focused") });
+  expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("you just did exactly this") });
+  expect(received[5]![0]!.text).toContain("Tell your host what you managed");
+  expect(received).toHaveLength(6);
+});
+
+test("a click refused as a guess runs when tried again after the page was shown", async () => {
+  const { browser, done } = fakeBrowser();
+  const run1 = browser.run;
+  let shown = false;
+  browser.run = async (action, signal) => {
+    if (!shown) {
+      shown = true;
+      throw new Error("Not executed: you haven't seen this page's elements yet, so [3] is a guess. Use a number from the page below.");
+    }
+    return run1(action, signal);
+  };
+  const { session, received } = scripted(step(browse({ action: "click", ref: 3 })), step(browse({ action: "click", ref: 3 })), step());
+  await run(session, new FakeDesktop(), { browser });
+  expect(done).toEqual([{ op: "click", ref: 3 }]);
+  expect(received[2]![0]).not.toMatchObject({ isError: true });
 });
 
 test("after a page, a type or key without a ref goes to the page's focused field; after the screen, to the desktop again", async () => {
