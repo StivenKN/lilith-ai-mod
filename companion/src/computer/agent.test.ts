@@ -261,6 +261,21 @@ test("a browser call that fails the same way is refused the second time and ends
   expect(received).toHaveLength(5);
 });
 
+test("after a page, a type or key without a ref goes to the page's focused field; after the screen, to the desktop again", async () => {
+  const desktop = new FakeDesktop();
+  const { browser, done } = fakeBrowser();
+  const { session } = scripted(
+    step(call("open_url", { url: "wikipedia.org" })),
+    step(act({ action: "type", text: "perros" }), call("key", { keys: ["enter"] })),
+    step(call("open_app", { name: "Notepad" })),
+    step(act({ action: "type", text: "hola" })),
+    step(),
+  );
+  expect(await run(session, desktop, { browser })).toMatchObject({ outcome: "done" });
+  expect(done).toEqual([{ op: "open", url: "https://wikipedia.org" }, { op: "type", ref: null, text: "perros", submit: false }, { op: "key", keys: "enter" }]);
+  expect(desktop.actions).toEqual([{ type: "openApp", name: "Notepad" }, { type: "type", text: "hola" }]);
+});
+
 test("waiting while browsing shows the page again and leaves the desktop to the player", async () => {
   const desktop = new FakeDesktop();
   const { browser } = fakeBrowser();
