@@ -174,6 +174,27 @@ test("superseding a turn during focus handoff prevents its first action", async 
   expect(desktop.actions).toHaveLength(0);
 });
 
+test("the calls that ran come back as acted, failures flagged: not the answer nudge, not the finish", async () => {
+  const desktop = new FakeDesktop();
+  desktop.execute = async (action) => {
+    if (action.type === "openApp" && action.name === "Nada") throw new Error("No app named Nada");
+    desktop.actions.push(action);
+  };
+  const { session } = scripted(step(act({ action: "answer", text: "¿Lo abro?" })), step(call("open_app", { name: "Nada" })), step(call("open_app", { name: "Notepad" })), step(act({ action: "terminate", status: "success" })));
+  expect((await run(session, desktop)).acted).toEqual([{ name: "open_app", input: { name: "Nada" }, error: true }, { name: "open_app", input: { name: "Notepad" } }]);
+});
+
+test("a turn stopped after acting still returns what ran", async () => {
+  const desktop = new FakeDesktop();
+  const session: AgentSession = { async next(results, http) {
+    if (!results.length) return step(call("open_app", { name: "Notepad" }));
+    setTimeout(() => desktop.inputVersion++, 10);
+    await new Promise<void>((_resolve, reject) => http.signal!.addEventListener("abort", () => reject(http.signal!.reason), { once: true }));
+    return step();
+  } };
+  expect(await run(session, desktop)).toMatchObject({ outcome: "stopped", acted: [{ name: "open_app", input: { name: "Notepad" } }] });
+});
+
 /** A browser that records what it's asked and shows a page that changes after anything but a look. */
 function fakeBrowser(options: { image?: boolean } = {}) {
   const done: Array<BrowserAction | { op: "open"; url: string }> = [];

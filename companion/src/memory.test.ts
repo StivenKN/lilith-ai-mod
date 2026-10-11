@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { estimateTokens, Memory, parseNoteChanges, parseSummaryLines, relevantNotes, SUMMARY_MAX_LINES, type ContextBudget } from "./memory.ts";
@@ -127,6 +127,40 @@ describe("Memory", () => {
     const online = memory.promptTurns(tiny, "online").map((turn) => turn.content);
     expect(online).toEqual(["¿y Laura?", "Laura te mandó las fotos del viaje.", "gracias", "De nada."]);
     expect(memory.promptTurns(tiny, "local")).toHaveLength(6);
+  });
+
+  test("a version 2 file without `acted` loads; the field is written only for exchanges that acted, and replayed to the model", async () => {
+    const file = await path();
+    const turn = { id: 1, role: "user", content: "abre la calculadora", at: "2026-10-01T12:00:00.000Z", source: "game" };
+    await writeFile(file, JSON.stringify({ version: 2, history: [turn, { ...turn, id: 2, role: "assistant", content: "Listo." }], notes: [], summary: "", summarizedThrough: 0, learnedThrough: 0 }));
+    const memory = await Memory.load(file);
+    expect(memory.history).toHaveLength(2);
+    const opened = [{ name: "open_app", input: { name: "Calculadora" } }];
+    await memory.addExchange("ábrela otra vez", "Ya está.", "game", null, opened);
+    await memory.addExchange("gracias", "De nada.", "game");
+    const saved = JSON.parse(await readFile(file, "utf8")) as { version: number; history: Array<{ acted?: unknown }> };
+    expect(saved.version).toBe(2);
+    expect(saved.history.map((turn) => turn.acted)).toEqual([undefined, undefined, undefined, opened, undefined, undefined]);
+    expect(memory.promptTurns(tiny, "local")[3]).toEqual({ role: "assistant", content: "Ya está.", acted: opened });
+  });
+
+  test("an exchange that acted is never a repeat, however much it says the same", async () => {
+    const memory = await Memory.load(await path());
+    const opened = [{ name: "open_app", input: { name: "Calculadora" } }];
+    expect(await memory.addExchange("abre la calculadora", "Listo, ya está abierta.", "game", null, opened)).toBe(true);
+    expect(await memory.addExchange("ábrela otra vez", "Listo, ya está abierta.", "game", null, opened)).toBe(true);
+    expect(memory.history.some((turn) => turn.repeat)).toBe(false);
+    expect(memory.promptTurns(tiny, "local")).toHaveLength(4);
+  });
+
+  test("the calls of an exchange weigh in the window, so a busy PC turn costs more than its words", async () => {
+    const plain = await Memory.load(await path());
+    await plain.addExchange("abre la calculadora", "Listo.", "game");
+    const busy = await Memory.load(await path());
+    const typed = Array.from({ length: 8 }, (_, i) => ({ name: "computer_use", input: { action: "type", text: `línea ${i} de la nota que le dictó` } }));
+    await busy.addExchange("abre la calculadora", "Listo.", "game", null, typed);
+    expect(plain.overdue({ ...tiny, window: 150 })).toBe(false);
+    expect(busy.overdue({ ...tiny, window: 150 })).toBe(true);
   });
 
   test("reads the summary lines the model wrote, or that there was nothing worth keeping", () => {

@@ -269,6 +269,74 @@ function describeProbe(body: Record<string, unknown>) {
   return completion(`Left: ${colors[[...bytes.subarray(1, 4)].join(",")]}. Right: ${colors[[...bytes.subarray(97, 100)].join(",")]}.`);
 }
 
+describe("past computer calls in the history", () => {
+  const acted = [
+    { name: "open_app", input: { name: "Calculadora" } },
+    { name: "computer_use", input: { action: "type", text: "2+2" }, error: true as const },
+    { name: "email", input: { query: "laura" } },
+  ];
+  const turns = [{ role: "user" as const, content: "abre la calculadora" }, { role: "assistant" as const, content: "Listo.", acted }, ...request.turns];
+  const plain = [{ role: "user", content: "abre la calculadora" }, { role: "assistant", content: "Listo." }, { role: "user", content: "¿hola?" }];
+  const claude = (text: string) => Response.json({ id: "msg", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } });
+
+  test("Ollama replays each offered call as a tool call and its result under tool_name; chat sends none", async () => {
+    const server = mock(() => Response.json({ message: { content: "Done" } }));
+    const provider = createProvider({ preset: "ollama", baseUrl: server.url, model: "qwen", apiKey: "" }, noop);
+    await provider.agent({ ...agentRequest, turns }).next([], http);
+    expect(transcript.parse(server.bodies[0]).messages.slice(1)).toEqual([
+      { role: "user", content: "abre la calculadora" },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] },
+      { role: "tool", tool_name: "open_app", content: "OK" },
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "computer_use", arguments: { action: "type", text: "2+2" } } }] },
+      { role: "tool", tool_name: "computer_use", content: "Error" },
+      { role: "assistant", content: "Listo." },
+      { role: "user", content: "¿hola?" },
+    ]);
+    await provider.chat({ ...request, turns });
+    expect(transcript.parse(server.bodies[1]).messages.slice(1)).toEqual(plain);
+  });
+
+  test("OpenAI replays each offered call under a past-N id its result answers; chat sends none", async () => {
+    const server = mock(() => completion("Done"));
+    const provider = openai(server.url);
+    await provider.agent({ ...agentRequest, turns }).next([], http);
+    expect(transcript.parse(server.bodies[0]).messages.slice(1)).toEqual([
+      { role: "user", content: "abre la calculadora" },
+      { role: "assistant", content: null, tool_calls: [{ id: "past-1", type: "function", function: { name: "open_app", arguments: '{"name":"Calculadora"}' } }] },
+      { role: "tool", tool_call_id: "past-1", content: "OK" },
+      { role: "assistant", content: null, tool_calls: [{ id: "past-2", type: "function", function: { name: "computer_use", arguments: '{"action":"type","text":"2+2"}' } }] },
+      { role: "tool", tool_call_id: "past-2", content: "Error" },
+      { role: "assistant", content: "Listo." },
+      { role: "user", content: "¿hola?" },
+    ]);
+    await provider.chat({ ...request, turns });
+    expect(transcript.parse(server.bodies[1]).messages.slice(1)).toEqual(plain);
+  });
+
+  test("Claude replays the calls of the tools it sends: not computer_use beside its own toolset, both once the toolset is rejected; chat sends none", async () => {
+    const server = mock((_request, body) => JSON.stringify(body.tools ?? []).includes("computer_toolset")
+      ? Response.json({ type: "error", error: { type: "invalid_request_error", message: "computer toolset is not supported" } }, { status: 400 })
+      : claude("Done"));
+    const provider = createProvider({ preset: "anthropic", baseUrl: server.url, model: "claude-opus-5-5", apiKey: "test" }, noop);
+    await provider.agent({ ...agentRequest, turns }).next([], http);
+    const opened = [
+      { role: "user", content: "abre la calculadora" },
+      { role: "assistant", content: [{ type: "tool_use", id: "past-1", name: "open_app", input: { name: "Calculadora" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "past-1", content: "OK" }] },
+    ];
+    expect(transcript.parse(server.bodies[0]).messages).toEqual([...opened, { role: "assistant", content: "Listo." }, { role: "user", content: "¿hola?" }]);
+    expect(transcript.parse(server.bodies[1]).messages).toEqual([
+      ...opened,
+      { role: "assistant", content: [{ type: "tool_use", id: "past-2", name: "computer_use", input: { action: "type", text: "2+2" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "past-2", content: "Error", is_error: true }] },
+      { role: "assistant", content: "Listo." },
+      { role: "user", content: "¿hola?" },
+    ]);
+    await provider.chat({ ...request, turns });
+    expect(transcript.parse(server.bodies[2]).messages).toEqual(plain);
+  });
+});
+
 describe("computer sessions", () => {
   test("llama.cpp text-only metadata avoids sending an image probe", async () => {
     const server = mock(() => { throw new Error("An image probe must not reach a text-only model"); }, { modalities: { vision: false } });
