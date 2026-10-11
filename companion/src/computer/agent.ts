@@ -1,7 +1,7 @@
 import type { BrowserSession } from "../browser/session.ts";
 import type { HttpOptions } from "../providers/http.ts";
 import type { AgentSession, ToolCall, ToolResult } from "../providers/types.ts";
-import { parseCall, physicalPoint, screenshotSize, type Action } from "./actions.ts";
+import { parseCall, physicalPoint, screenshotSize, type Action, type Picture } from "./actions.ts";
 import type { Desktop, InputWatch } from "./desktop.ts";
 import { guardAction, type Foreground } from "./guards.ts";
 
@@ -73,7 +73,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   // Whether the model planned this batch on a screenshot that still shows the screen.
   let current = false;
   // What the latest picture showed: after a page, screen coordinates are guesses of another kind.
-  let picture: "screen" | "page" | null = null;
+  let picture: Picture = null;
   let lastScreen: number | bigint | undefined;
   // The latest action that changed something, and whether the screen changed after it.
   let last: { action: string; changed: boolean | null } | undefined;
@@ -126,7 +126,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           results.push({ id: call.id, text: skip, isError: true });
           continue;
         }
-        const action = parseCall(call, options.desktop.screen, options.browser !== undefined);
+        const action = parseCall(call, options.desktop.screen, options.browser !== undefined, picture);
         // Asked to do something, a small model often "answers" by asking whether it should. Once,
         // before anything happened, it's told to act instead; a second answer stands.
         if (!("error" in action) && action.type === "finish" && steps === 0 && !nudged) {
