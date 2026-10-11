@@ -80,8 +80,8 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   // What the latest picture showed: after a page, screen coordinates are guesses of another kind.
   let picture: Picture = null;
   let lastScreen: number | bigint | undefined;
-  // The latest action that changed something, and whether the screen changed after it.
-  let last: { action: string; changed: boolean | null } | undefined;
+  // The latest action that changed something, and whether the screen changed after it, or the error it failed with.
+  let last: { action: string; changed: boolean | null; failed?: string } | undefined;
   let answer: string | null = null;
   let nudged = false;
   let repeats = 0;
@@ -233,7 +233,8 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           results.push({ id: call.id, text, isError: true });
           if (attempted) {
             ran(call, false);
-            last = { action: signature, changed: false };
+            // Once may be a refusal the next picture answers (a guessed element number); the same error twice is a loop.
+            last = { action: signature, changed: last?.action === signature && last.failed === text ? false : null, failed: text };
           }
           skip = SKIPPED;
         }
