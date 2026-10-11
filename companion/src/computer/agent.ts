@@ -145,6 +145,9 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
         const browser = "error" in action ? undefined : browserFor(action);
         // Waiting for a page to load shows the page again.
         browsed ||= !!browser || (call.name === "browser" && options.browser !== undefined) || (!("error" in action) && action.type === "wait" && picture === "page");
+        const signature = JSON.stringify(action);
+        // Set once the action is really being done, past the refusals: only those failures count as repeats.
+        let attempted = false;
         try {
           if ("error" in action) throw new Error(action.error);
           if (!options.vision && !BLIND.has(action.type)) {
@@ -175,7 +178,6 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
               ? "Not executed: your last picture shows only the browser page, not the screen, so these coordinates are a guess. In the page, use the browser tool's numbers; otherwise take a screenshot first."
               : "Not executed: you have not seen the screen since it last changed, so these coordinates are a guess. Look at the new screenshot and choose them again.");
           }
-          const signature = JSON.stringify(action);
           // Waiting again for a slow app is fine; it's other repeats that mean the model is stuck.
           if (action.type !== "wait" && last?.action === signature && last.changed === false) {
             // A small model can ignore this and retry forever (tasks have no action limit). The third time, the task ends.
@@ -188,6 +190,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
             throw new Error(`Not executed: you just did exactly this and the ${browser ? "page" : "screen"} did not change. Try something different (another element, a keyboard shortcut, another way), or tell your host you could not do it.`);
           }
           if (!browser) guardAction(action, options.desktop.foreground());
+          attempted = true;
           options.onStatus(action);
           options.log(`computer action ${steps}: ${action.type}${action.type === "type" ? ` (${action.text.length} characters)` : action.type === "window" ? ` ${action.op}` : action.type === "browser" ? ` ${action.op.op}` : ""}`);
           let text = "OK";
@@ -214,6 +217,8 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           const text = error instanceof Error ? error.message : String(error);
           options.log(`computer action failed: ${text}`);
           results.push({ id: call.id, text, isError: true });
+          // A failure changed nothing either, so the same call again meets the repeat guard above.
+          if (attempted) last = { action: signature, changed: false };
           skip = SKIPPED;
         }
       }
