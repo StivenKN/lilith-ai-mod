@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { awaitWithAbort, requestJson, send, toolsUnsupported, trimSlash } from "./http.ts";
 import { toolCallsInText, toolSchema } from "./tools.ts";
-import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
+import { normalizeTurns, ProviderError, stepTemperature, type Capabilities, type ChatRequest, type ChatResult, type ChatTurn, type ModelInfo, type Provider, type ToolCall } from "./types.ts";
 
 /** Minutes a model stays loaded after its last request, unless the settings say otherwise. */
 export const UNLOAD_AFTER_MINUTES = 10;
@@ -116,8 +116,16 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
 
     agent(request) {
       type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_name?: string; images?: string[]; tool_calls?: z.infer<typeof OllamaMessage>["tool_calls"] };
-      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map(({ role, content }) => ({ role, content }))];
       const tools = request.tools;
+      // A past turn comes back as it happened: each call, its result (paired by tool_name), then her words.
+      const past = (turn: ChatTurn): Message[] => [
+        ...(turn.acted ?? []).flatMap((call): Message[] => [
+          { role: "assistant", content: "", tool_calls: [{ function: { name: call.name, arguments: call.input } }] },
+          { role: "tool", tool_name: call.name, content: call.error ? "Error" : "OK" },
+        ]),
+        { role: turn.role, content: turn.content },
+      ];
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns, tools.map((tool) => tool.name)).flatMap(past)];
       let pending: ToolCall[] = [];
       let sequence = 0;
       // The latest screenshot or page. The one before is blanked: each costs as much context as a long reply.

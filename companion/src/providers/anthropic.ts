@@ -91,7 +91,22 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
     },
 
     agent(request) {
-      const messages: BetaMessageParam[] = normalizeTurns(request.turns).map(toMessage);
+      const functions = (toolset: boolean) => request.tools.filter((tool) => !toolset || tool.name !== "computer_use");
+      // Ids are minted per request so the cached prefix stays the same.
+      const history = (toolset: boolean): BetaMessageParam[] => {
+        let pastId = 0;
+        return normalizeTurns(request.turns, functions(toolset).map((tool) => tool.name)).flatMap((turn): BetaMessageParam[] => [
+          ...(turn.acted ?? []).flatMap((call): BetaMessageParam[] => {
+            const id = `past-${++pastId}`;
+            return [
+              { role: "assistant", content: [{ type: "tool_use", id, name: call.name, input: call.input }] },
+              { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: call.error ? "Error" : "OK", ...(call.error ? { is_error: true } : {}) }] },
+            ];
+          }),
+          toMessage(turn),
+        ]);
+      };
+      const transcript: BetaMessageParam[] = [];
       let pending: ToolCall[] = [];
       return {
         async next(results, http) {
@@ -109,23 +124,21 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
               const toolset = pending.find((call) => call.id === result.id)?.toolset;
               return { type: "tool_result", tool_use_id: result.id, content: blocks, ...(result.isError ? { is_error: true } : {}), ...(toolset ? { toolset_name: toolset } : {}) };
             });
-            messages.push({ role: "user", content: [...content, ...after] });
+            transcript.push({ role: "user", content: [...content, ...after] });
           }
           for (let attempt = 0; ; attempt++) {
             const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
-            const tools: BetaToolUnion[] = request.tools
-              .filter((tool) => !toolset || tool.name !== "computer_use")
-              .map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
+            const tools: BetaToolUnion[] = functions(toolset).map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));
             if (toolset) tools.unshift({ type: "computer_toolset_20260801", configs: { hold_key: { enabled: false }, left_mouse_down: { enabled: false }, left_mouse_up: { enabled: false } } });
             try {
               const response = await client.beta.messages.create({
-                model: options.model, system: request.system, messages, max_tokens: request.maxTokens, tools,
+                model: options.model, system: request.system, messages: [...history(toolset), ...transcript], max_tokens: request.maxTokens, tools,
                 ...(!off.has("cache") ? { cache_control: { type: "ephemeral" as const } } : {}),
                 ...(EFFORT_MODELS.test(options.model) && !off.has("effort") ? { output_config: { effort: "low" as const } } : {}),
               }, { timeout: http.timeoutMs, ...(http.signal ? { signal: http.signal } : {}) });
               if (response.stop_reason === "refusal") throw new ProviderError("refused", `Claude declined (${response.stop_details?.category ?? "no category"})`);
               // Keep thinking/signature blocks and all toolset metadata exactly as returned.
-              messages.push({ role: "assistant", content: response.content });
+              transcript.push({ role: "assistant", content: response.content });
               pending = response.content.flatMap((block): ToolCall[] => block.type === "tool_use" ? [{ id: block.id, name: block.name, input: block.input, ...(block.toolset_name ? { toolset: block.toolset_name } : {}) }] : []);
               return { calls: pending, text: response.content.flatMap((block) => block.type === "text" ? [block.text] : []).join(""), model: response.model, finish: response.stop_reason === "max_tokens" ? "length" : "stop" };
             } catch (error) {

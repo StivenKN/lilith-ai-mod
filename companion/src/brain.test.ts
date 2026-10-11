@@ -767,7 +767,8 @@ describe("Memory", () => {
       if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
       if (path === "/api/ps") return Response.json({ models: [] });
       const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
-      if (body.messages.some((message) => message.role === "tool")) return Response.json({ message: { content: desktop.actions.length === 1 ? "[feliz] Abrí el bloc de notas." : "[feliz] Listo, ahí lo tienes otra vez." } });
+      // Answers once it has its own result this turn; the earlier turn's call, replayed in the history, isn't one.
+      if (body.messages.at(-1)!.role === "tool") return Response.json({ message: { content: desktop.actions.length === 1 ? "[feliz] Abrí el bloc de notas." : "[feliz] Listo, ahí lo tienes otra vez." } });
       // Without tools she can only talk; with them, the second plain ask repeats her last words and the cued retry acts.
       if (!body.tools) return Response.json({ message: { content: "[feliz] Ya te lo abrí antes." } });
       if (++plain === 2) return Response.json({ message: { content: "[feliz] Abrí el bloc de notas." } });
