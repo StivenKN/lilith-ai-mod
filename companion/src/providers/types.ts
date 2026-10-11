@@ -1,11 +1,21 @@
-import type { z } from "zod";
+import { z } from "zod";
 import type { HttpOptions } from "./http.ts";
+
+/**
+ * A tool call that ran on a past computer turn, replayed so the model sees that she acted rather
+ * than answered in words. No ids, result text, pictures or pages: a failure is a flag, because
+ * error messages quote window titles and page text, which must not steer later turns.
+ */
+export const PastCall = z.object({ name: z.string(), input: z.record(z.string(), z.unknown()), error: z.literal(true).optional() });
+export type PastCall = z.infer<typeof PastCall>;
 
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
   /** Pictures attached to a user turn, for models that can see. Each adapter sends its own format. */
   images?: readonly ImageInput[];
+  /** The computer calls an assistant turn made before its words. Only `agent()` replays them, for the tools it offers. */
+  acted?: readonly PastCall[];
 }
 
 /** A picture as base64 JPEG (the dashboard re-encodes everything it uploads to JPEG). */
@@ -134,18 +144,23 @@ export class ProviderError extends Error {
   }
 }
 
-/** Providers need strictly alternating turns that start with the user. */
-export function normalizeTurns(turns: readonly ChatTurn[]): ChatTurn[] {
+/**
+ * Providers need strictly alternating turns that start with the user. Past computer calls survive
+ * only for tools in `offered`, so a `chat()` request, which offers none, sends her words alone.
+ */
+export function normalizeTurns(turns: readonly ChatTurn[], offered: readonly string[] = []): ChatTurn[] {
   const out: ChatTurn[] = [];
   for (const turn of turns) {
     const content = turn.content.trim();
     if (!content) continue;
     const images = turn.images ?? [];
+    const acted = (turn.acted ?? []).filter((call) => offered.includes(call.name));
     const last = out.at(-1);
     if (last?.role === turn.role) {
       last.content = `${last.content}\n${content}`;
       if (images.length > 0) last.images = [...(last.images ?? []), ...images];
-    } else out.push({ role: turn.role, content, ...(images.length > 0 ? { images } : {}) });
+      if (acted.length > 0) last.acted = [...(last.acted ?? []), ...acted];
+    } else out.push({ role: turn.role, content, ...(images.length > 0 ? { images } : {}), ...(acted.length > 0 ? { acted } : {}) });
   }
   while (out[0]?.role === "assistant") out.shift();
   return out;

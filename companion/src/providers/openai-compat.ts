@@ -170,8 +170,20 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
     },
 
     agent(request) {
-      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns).map((turn): Message => turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content })];
       const tools = request.tools;
+      // Ids are minted per request from the turn order, so the prompt prefix a server caches stays the same.
+      let pastId = 0;
+      const past = (turn: ChatTurn): Message[] => [
+        ...(turn.acted ?? []).flatMap((call): Message[] => {
+          const id = `past-${++pastId}`;
+          return [
+            { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.input) } }] },
+            { role: "tool", tool_call_id: id, content: call.error ? "Error" : "OK" },
+          ];
+        }),
+        turn.role === "assistant" ? { role: "assistant", content: turn.content } : { role: "user", content: turn.content },
+      ];
+      const messages: Message[] = [{ role: "system", content: request.system }, ...normalizeTurns(request.turns, tools.map((tool) => tool.name)).flatMap(past)];
       let sequence = 0;
       // Where the latest screenshot or page sits. The one before is blanked: each costs as much context as a long reply.
       let observation: { index: number; image: boolean } | undefined;

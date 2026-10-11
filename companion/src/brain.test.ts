@@ -315,29 +315,50 @@ test.each([
   expect(computerEnabled("off", { preset, baseUrl, model: "qwen3.5:4b" })).toBe(false);
 });
 
-test("Brain executes one tool turn, shows statuses, and stores only the user and final reply", async () => {
+test("Brain executes one tool turn, shows statuses, and replays the call on the next PC turn but not in plain chat", async () => {
   const desktop = new FakeDesktop();
-  let calls = 0;
+  const bodies: Array<{ tools?: unknown; messages: Array<{ role: string; content: string; images?: string[]; tool_name?: string; tool_calls?: unknown }> }> = [];
+  const replies = ["[feliz] Abrí la calculadora.", "[feliz] Listo, está abierta otra vez.", "[feliz] De nada."];
+  let answered = 0;
   respond = async (request) => {
     const path = new URL(request.url).pathname;
     if (path === "/api/show") return Response.json({ capabilities: ["tools", "vision"] });
     if (path === "/api/ps") return Response.json({ models: [{ name: "qwen" }] });
-    const body = await request.json() as { messages: Array<{ role: string }> };
-    calls++;
-    return Response.json({ model: "qwen", message: body.messages.some((message) => message.role === "tool")
-      ? { content: "[feliz] Abrí la calculadora." }
-      : { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] } });
+    const body = await request.json() as (typeof bodies)[number];
+    bodies.push(body);
+    const acting = body.tools !== undefined && body.messages.at(-1)!.images === undefined;
+    return Response.json({ model: "qwen", message: acting
+      ? { content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] }
+      : { content: replies[answered++] } });
   };
   const { brain, sent, memory, config } = await setup("computer", { desktop: { available: true, desktop } });
   await config.update({ provider: { preset: "ollama", baseUrl: `http://127.0.0.1:${server.port}`, model: "qwen" }, features: { computerControl: "auto", learnFacts: false } });
   expect(await brain.chat("Abre la calculadora", "game")).toMatchObject({ ok: true, text: "Abrí la calculadora." });
-  expect(calls).toBe(2);
+  expect(bodies).toHaveLength(2);
   expect(desktop.actions).toEqual([{ type: "openApp", name: "Calculadora" }]);
   expect(sent).toContainEqual({ type: "yieldFocus" });
   expect(sent).toContainEqual({ type: "chatStatus", kind: "thinking", text: "Abriendo Calculadora…" });
-  expect(memory.history.map((turn) => turn.role)).toEqual(["user", "assistant"]);
-  expect(JSON.stringify(memory.history)).not.toContain("image");
   expect(brain.snapshot().computer).toMatchObject({ available: true, tools: true, vision: true });
+
+  expect(await brain.chat("Ábrela otra vez", "game")).toMatchObject({ ok: true, text: "Listo, está abierta otra vez." });
+  const replayed = bodies[2]!.messages;
+  const at = replayed.findIndex((message) => message.role === "assistant" && message.tool_calls);
+  expect(replayed.slice(at, at + 3)).toEqual([
+    { role: "assistant", content: "", tool_calls: [{ function: { name: "open_app", arguments: { name: "Calculadora" } } }] },
+    { role: "tool", tool_name: "open_app", content: "OK" },
+    { role: "assistant", content: "Abrí la calculadora." },
+  ]);
+  expect(desktop.actions).toHaveLength(2);
+
+  await config.update({ features: { computerControl: "off" } });
+  expect(await brain.chat("gracias", "game")).toMatchObject({ ok: true, text: "De nada." });
+  const chat = bodies.at(-1)!;
+  expect(chat.tools).toBeUndefined();
+  expect(chat.messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user", "assistant", "user"]);
+  expect(memory.history.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+  const opened = [{ name: "open_app", input: { name: "Calculadora" } }];
+  expect(memory.history.map((turn) => turn.acted)).toEqual([undefined, opened, undefined, opened, undefined, undefined]);
+  expect(JSON.stringify(memory.history)).not.toContain("image");
 });
 
 test("with the browser connected, she gets its tool and rules, opens pages there and reads them back", async () => {
@@ -746,7 +767,8 @@ describe("Memory", () => {
       if (path === "/api/show") return Response.json({ capabilities: ["tools"] });
       if (path === "/api/ps") return Response.json({ models: [] });
       const body = await request.json() as { tools?: unknown; messages: Array<{ role: string; content: string }> };
-      if (body.messages.some((message) => message.role === "tool")) return Response.json({ message: { content: desktop.actions.length === 1 ? "[feliz] Abrí el bloc de notas." : "[feliz] Listo, ahí lo tienes otra vez." } });
+      // Answers once it has its own result this turn; the earlier turn's call, replayed in the history, isn't one.
+      if (body.messages.at(-1)!.role === "tool") return Response.json({ message: { content: desktop.actions.length === 1 ? "[feliz] Abrí el bloc de notas." : "[feliz] Listo, ahí lo tienes otra vez." } });
       // Without tools she can only talk; with them, the second plain ask repeats her last words and the cued retry acts.
       if (!body.tools) return Response.json({ message: { content: "[feliz] Ya te lo abrí antes." } });
       if (++plain === 2) return Response.json({ message: { content: "[feliz] Abrí el bloc de notas." } });

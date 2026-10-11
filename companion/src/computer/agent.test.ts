@@ -36,7 +36,7 @@ test("a lookup tool call ends the turn before anything in its batch runs, and be
   const desktop = new FakeDesktop();
   const lookup = call("email", { query: "laura" });
   const { session, received } = scripted(step(call("open_app", { name: "Notepad" }), lookup), step());
-  expect(await run(session, desktop, { lookupTools: ["email", "web_search"] })).toEqual({ text: "", model: "test", outcome: "lookup", calls: [expect.objectContaining({ name: "open_app" }), lookup] });
+  expect(await run(session, desktop, { lookupTools: ["email", "web_search"] })).toEqual({ text: "", model: "test", outcome: "lookup", calls: [expect.objectContaining({ name: "open_app" }), lookup], acted: [] });
   expect(desktop.actions).toHaveLength(0);
   expect(received).toHaveLength(1);
   // Without the tool offered, the same call is a PC call the loop reports as unknown.
@@ -174,6 +174,27 @@ test("superseding a turn during focus handoff prevents its first action", async 
   expect(desktop.actions).toHaveLength(0);
 });
 
+test("the calls that ran come back as acted, failures flagged: not the answer nudge, not the finish", async () => {
+  const desktop = new FakeDesktop();
+  desktop.execute = async (action) => {
+    if (action.type === "openApp" && action.name === "Nada") throw new Error("No app named Nada");
+    desktop.actions.push(action);
+  };
+  const { session } = scripted(step(act({ action: "answer", text: "¿Lo abro?" })), step(call("open_app", { name: "Nada" })), step(call("open_app", { name: "Notepad" })), step(act({ action: "terminate", status: "success" })));
+  expect((await run(session, desktop)).acted).toEqual([{ name: "open_app", input: { name: "Nada" }, error: true }, { name: "open_app", input: { name: "Notepad" } }]);
+});
+
+test("a turn stopped after acting still returns what ran", async () => {
+  const desktop = new FakeDesktop();
+  const session: AgentSession = { async next(results, http) {
+    if (!results.length) return step(call("open_app", { name: "Notepad" }));
+    setTimeout(() => desktop.inputVersion++, 10);
+    await new Promise<void>((_resolve, reject) => http.signal!.addEventListener("abort", () => reject(http.signal!.reason), { once: true }));
+    return step();
+  } };
+  expect(await run(session, desktop)).toMatchObject({ outcome: "stopped", acted: [{ name: "open_app", input: { name: "Notepad" } }] });
+});
+
 /** A browser that records what it's asked and shows a page that changes after anything but a look. */
 function fakeBrowser(options: { image?: boolean } = {}) {
   const done: Array<BrowserAction | { op: "open"; url: string }> = [];
@@ -242,6 +263,55 @@ test("a page that didn't change is said so, and the third identical try ends the
   expect(await run(session, new FakeDesktop(), { browser })).toMatchObject({ outcome: "done" });
   expect(received[2]![0]!.text).toContain("The page did not change.");
   expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("the page did not change") });
+});
+
+test("a browser call that fails the same way twice is refused the next time and ends the task after that, like one that changes nothing", async () => {
+  const { browser, done } = fakeBrowser();
+  browser.run = async (action) => {
+    done.push(action);
+    throw new Error("no field is focused; give the field's number as ref");
+  };
+  const typing = () => browse({ action: "type", text: "gatos" });
+  const { session, received } = scripted(...Array.from({ length: 6 }, () => step(typing())));
+  const result = await run(session, new FakeDesktop(), { browser });
+  expect(done).toHaveLength(2);
+  expect(result).toMatchObject({ outcome: "done", text: "" });
+  expect(received[2]![0]).toMatchObject({ isError: true, text: expect.stringContaining("no field is focused") });
+  expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("you just did exactly this") });
+  expect(received[5]![0]!.text).toContain("Tell your host what you managed");
+  expect(received).toHaveLength(6);
+});
+
+test("a click refused as a guess runs when tried again after the page was shown", async () => {
+  const { browser, done } = fakeBrowser();
+  const run1 = browser.run;
+  let shown = false;
+  browser.run = async (action, signal) => {
+    if (!shown) {
+      shown = true;
+      throw new Error("Not executed: you haven't seen this page's elements yet, so [3] is a guess. Use a number from the page below.");
+    }
+    return run1(action, signal);
+  };
+  const { session, received } = scripted(step(browse({ action: "click", ref: 3 })), step(browse({ action: "click", ref: 3 })), step());
+  await run(session, new FakeDesktop(), { browser });
+  expect(done).toEqual([{ op: "click", ref: 3 }]);
+  expect(received[2]![0]).not.toMatchObject({ isError: true });
+});
+
+test("after a page, a type or key without a ref goes to the page's focused field; after the screen, to the desktop again", async () => {
+  const desktop = new FakeDesktop();
+  const { browser, done } = fakeBrowser();
+  const { session } = scripted(
+    step(call("open_url", { url: "wikipedia.org" })),
+    step(act({ action: "type", text: "perros" }), call("key", { keys: ["enter"] })),
+    step(call("open_app", { name: "Notepad" })),
+    step(act({ action: "type", text: "hola" })),
+    step(),
+  );
+  expect(await run(session, desktop, { browser })).toMatchObject({ outcome: "done" });
+  expect(done).toEqual([{ op: "open", url: "https://wikipedia.org" }, { op: "type", ref: null, text: "perros", submit: false }, { op: "key", keys: "enter" }]);
+  expect(desktop.actions).toEqual([{ type: "openApp", name: "Notepad" }, { type: "type", text: "hola" }]);
 });
 
 test("waiting while browsing shows the page again and leaves the desktop to the player", async () => {

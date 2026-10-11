@@ -423,11 +423,11 @@ export class Brain {
       const shelf = this.#openShelf(gate);
       const desktop = await this.#desktopReady;
       const useComputer = !speakFirst && computerEnabled(config.features.computerControl, settings) && desktop.available;
-      const { text, emotion, model, consulted } = useComputer
+      const { text, emotion, model, consulted, acted } = useComputer
         ? await this.#askComputer(provider, settings, language, turns, shelf, desktop, () => clearInterval(escalation), onLookup, input.computerEpoch)
         : await this.#ask(provider, settings, language, turns, shelf, { onLookup });
       const latencyMs = Math.round(performance.now() - started);
-      const stored = await this.options.memory.addExchange(input.user, text, input.source, consulted);
+      const stored = await this.options.memory.addExchange(input.user, text, input.source, consulted, acted);
       if (!stored) this.#log.info("reply was still a near-repeat; shown, but kept out of her context");
       this.#log.info(`reply in ${latencyMs} ms from ${model} (${input.source})`);
 
@@ -485,7 +485,7 @@ export class Brain {
   ) {
     const config = this.options.config.current;
     const tr = translator(this.uiLocale());
-    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: null });
+    const stopped = () => ({ text: tr("computer.stopped"), emotion: "neutral" as const, model: settings.model, consulted: null, acted: [] });
     if (this.#stopped) return stopped();
     if (epoch !== this.#computerEpoch) return this.#ask(provider, settings, language, turns, shelf, { onLookup });
     const controller = new AbortController();
@@ -567,7 +567,7 @@ export class Brain {
       }
       const reply = parseReply(stripLookupTags(text), config.advanced.maxReplyChars);
       this.#warm.add(warmKey(settings));
-      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model, consulted };
+      return { ...reply, text: repeats(reply.text, this.options.memory.recentReplies()).text || tr("computer.empty"), model: result.model || settings.model, consulted, acted: result.acted };
     } catch (error) {
       if (controller.signal.aborted) return stopped();
       if (config === this.options.config.current && error instanceof ProviderError && error.kind === "no_tools") {
@@ -669,7 +669,7 @@ export class Brain {
       reply = { ...reply, text: kept.text };
     }
     this.#warm.add(warmKey(settings));
-    return { text: reply.text, emotion: reply.emotion, model, consulted };
+    return { text: reply.text, emotion: reply.emotion, model, consulted, acted: [] };
   }
 
   /**

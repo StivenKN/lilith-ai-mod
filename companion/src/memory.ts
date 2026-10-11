@@ -17,7 +17,7 @@ import { readTextFile, writeAtomic } from "./config.ts";
 import { copyFile } from "node:fs/promises";
 import { isRepeat, truncate } from "./reply.ts";
 import type { Audience } from "./lookup/gate.ts";
-import type { ChatTurn } from "./providers/types.ts";
+import { PastCall, type ChatTurn } from "./providers/types.ts";
 
 const StoredTurn = z.object({
   /** Increases by one per turn; the summary and notes record how far they've read. */
@@ -35,6 +35,8 @@ const StoredTurn = z.object({
    * becomes a permanent note.
    */
   consulted: z.enum(["local", "online"]).optional(),
+  /** The computer calls she made before this reply, replayed on later PC turns. Absent when she only spoke. */
+  acted: z.array(PastCall).optional(),
 });
 export type StoredTurn = z.infer<typeof StoredTurn>;
 
@@ -92,7 +94,8 @@ export const contextBudget = (local: boolean): ContextBudget =>
  * model copies its own replies however short they are.
  */
 const TURN_MIN_TOKENS = 50;
-const weight = (turn: StoredTurn): number => Math.max(TURN_MIN_TOKENS, estimateTokens(turn.content));
+const weight = (turn: StoredTurn): number =>
+  Math.max(TURN_MIN_TOKENS, estimateTokens(turn.content) + (turn.acted ?? []).reduce((sum, call) => sum + estimateTokens(JSON.stringify(call)), 0));
 
 const WIDE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
@@ -233,7 +236,7 @@ export class Memory {
       if (tokens > budget.window && turns.length - start >= 2) break;
       start--;
     }
-    return turns.slice(start).map(({ role, content }) => ({ role, content }));
+    return turns.slice(start).map(({ role, content, acted }) => ({ role, content, ...(acted ? { acted } : {}) }));
   }
 
   /** Her latest replies, newest last, to keep her from repeating herself. */
@@ -250,14 +253,17 @@ export class Memory {
     return at ? new Date(at) : null;
   }
 
-  /** Records an exchange. Returns false if the reply was a near-repeat (kept out of the context). */
-  async addExchange(user: string | null, reply: string, source: StoredTurn["source"], consulted: Audience | null = null): Promise<boolean> {
+  /**
+   * Records an exchange. Returns false if the reply was a near-repeat (kept out of the context).
+   * One that acted on the PC never is.
+   */
+  async addExchange(user: string | null, reply: string, source: StoredTurn["source"], consulted: Audience | null = null, acted: readonly PastCall[] = []): Promise<boolean> {
     const at = new Date().toISOString();
-    const repeat = isRepeat(reply, this.recentReplies(5));
+    const repeat = acted.length === 0 && isRepeat(reply, this.recentReplies(5));
     const flags = consulted ? { consulted } : {};
     let id = this.#lastId();
     if (user) this.data.history.push({ id: ++id, role: "user", content: user, at, source, ...flags });
-    this.data.history.push({ id: ++id, role: "assistant", content: reply, at, source, ...flags, ...(repeat ? { repeat } : {}) });
+    this.data.history.push({ id: ++id, role: "assistant", content: reply, at, source, ...flags, ...(repeat ? { repeat } : {}), ...(acted.length > 0 ? { acted: [...acted] } : {}) });
     this.data.history = this.data.history.slice(-STORED_TURNS);
     await this.save();
     return !repeat;

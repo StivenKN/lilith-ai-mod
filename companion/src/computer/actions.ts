@@ -25,6 +25,9 @@ export const GRID = 1000;
 export const windowOps = ["list", "focus", "maximize", "minimize", "close"] as const;
 export type WindowOp = (typeof windowOps)[number];
 
+/** What the model's latest picture showed, once it has seen one. */
+export type Picture = "screen" | "page" | null;
+
 /** What the desktop does. Points are pixels in the screenshot the model was sent. */
 export type Action =
   | { type: "screenshot" | "cursor" }
@@ -196,9 +199,10 @@ const pos = ([x, y]: z.infer<typeof point>): Point => ({ x, y });
 
 /**
  * Parse only declared computer members and custom tools. Invalid inputs never reach the desktop.
- * `browser`: the extension is connected this turn, so browser actions are allowed.
+ * `browser`: the extension is connected this turn, so browser actions are allowed. `picture`: what
+ * the model last saw; after a page, a `type` or `key` with no element number means its focused field.
  */
-export function parseCall(call: ToolCall, screen: Size, browser = false): Action | { error: string } {
+export function parseCall(call: ToolCall, screen: Size, browser = false, picture: Picture = null): Action | { error: string } {
   try {
     if (call.error) throw new Error(call.error);
     const input = call.input;
@@ -241,11 +245,16 @@ export function parseCall(call: ToolCall, screen: Size, browser = false): Action
     // Once refs are in the transcript, {"name": "click", "arguments": {"ref": 12}} means the page.
     // Taken as a desktop click without a point, it would land wherever the cursor is.
     const onElement = refOf(fields) !== null && fields.coordinate === undefined && fields.x === undefined && fields.y === undefined;
+    // Typing with no element while a page is in view means its focused field, which the browser
+    // handles with `ref: null`. Sent to the desktop, the keys would land in whatever window has focus.
+    const onPage = (name: ActionName | undefined) => browser && picture === "page" && (name === "type" || name === "key");
     if (call.name === "computer_use") {
       const action = typeof fields.action === "string" ? fields.action.trim().toLowerCase() : "";
       if (onElement) return browserCall({ ...fields, action: action || "click" }, browser);
       // Browser actions written into the computer tool ({"action": "read"}) go to the browser too.
       if (browser && browserOnly(action)) return browserCall(fields, browser);
+      const named = actionNamed(action);
+      if (onPage(named)) return browserCall({ ...fields, action: named }, browser);
       return computerAction(fields, screen);
     }
     const action = customAction(call.name, input);
@@ -254,6 +263,7 @@ export function parseCall(call: ToolCall, screen: Size, browser = false): Action
     // A small model sometimes calls an action as if it were a tool of its own.
     const named = actionNamed(call.name);
     if (named && onElement) return browserCall({ ...fields, action: call.name }, browser);
+    if (onPage(named)) return browserCall({ ...fields, action: named }, browser);
     if (named) return computerAction({ ...fields, action: named }, screen);
     throw new Error(`Unknown tool: ${call.name}. Use ${browser ? "browser, " : ""}computer_use, open_app, open_url or window.`);
   } catch (error) {

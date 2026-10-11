@@ -1,7 +1,7 @@
 import type { BrowserSession } from "../browser/session.ts";
 import type { HttpOptions } from "../providers/http.ts";
-import type { AgentSession, ToolCall, ToolResult } from "../providers/types.ts";
-import { parseCall, physicalPoint, screenshotSize, type Action } from "./actions.ts";
+import { PastCall, type AgentSession, type ToolCall, type ToolResult } from "../providers/types.ts";
+import { parseCall, physicalPoint, screenshotSize, type Action, type Picture } from "./actions.ts";
 import type { Desktop, InputWatch } from "./desktop.ts";
 import { guardAction, type Foreground } from "./guards.ts";
 
@@ -34,7 +34,12 @@ export interface ComputerTurnResult {
   /** `lookup`: the model asked to look something up; `calls` carries the request for Brain's shelf. */
   outcome: "done" | "stopped" | "superseded" | "lookup";
   calls: readonly ToolCall[];
+  /** The calls that ran, in order, whatever the outcome: memory replays them on later PC turns. */
+  acted: readonly PastCall[];
 }
+
+const MAX_ACTED_CALLS = 8;
+const MAX_ACTED_CHARS = 200;
 
 /** What a model without vision may do: everything but the mouse. The browser works by element numbers, so it's all there. */
 const BLIND: ReadonlySet<Action["type"]> = new Set(["type", "key", "wait", "openApp", "openUrl", "window", "browser", "finish"]);
@@ -73,13 +78,21 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   // Whether the model planned this batch on a screenshot that still shows the screen.
   let current = false;
   // What the latest picture showed: after a page, screen coordinates are guesses of another kind.
-  let picture: "screen" | "page" | null = null;
+  let picture: Picture = null;
   let lastScreen: number | bigint | undefined;
-  // The latest action that changed something, and whether the screen changed after it.
-  let last: { action: string; changed: boolean | null } | undefined;
+  // The latest action that changed something, and whether the screen changed after it, or the error it failed with.
+  let last: { action: string; changed: boolean | null; failed?: string } | undefined;
   let answer: string | null = null;
   let nudged = false;
   let repeats = 0;
+  const acted: PastCall[] = [];
+  /** Claude's own toolset is left out: no other model could replay it. */
+  const ran = (call: ToolCall, ok: boolean) => {
+    if (call.toolset === "computer" || acted.length >= MAX_ACTED_CALLS) return;
+    const input = PastCall.shape.input.safeParse(call.input);
+    const fields = Object.fromEntries(Object.entries(input.success ? input.data : {}).map(([key, value]) => [key, typeof value === "string" ? value.slice(0, MAX_ACTED_CHARS) : value]));
+    acted.push({ name: call.name, input: fields, ...(ok ? {} : { error: true }) });
+  };
   const pollInput = () => {
     if (signal.aborted) return;
     try { if (watch?.changed()) controller.abort(); }
@@ -104,11 +117,11 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       model = step.model;
       checkInput();
       // After terminate or answer the model only has to reply. More calls end the task anyway.
-      if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [] };
+      if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [], acted };
       // A lookup is terminal and answered without tools, so nothing in its batch runs: not a PC
       // action named beside it, and never parseCall, whose aliases must not swallow it. Once the
       // model has acted it has seen page text, which must not get to steer a lookup: refused below.
-      if (steps === 0 && step.calls.some((call) => lookups.has(call.name))) return { text: step.text, model, outcome: "lookup", calls: step.calls };
+      if (steps === 0 && step.calls.some((call) => lookups.has(call.name))) return { text: step.text, model, outcome: "lookup", calls: step.calls, acted };
       results = [];
       let skip: string | null = null;
       let custom = false;
@@ -117,7 +130,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
       const changed: Action[] = [];
       for (const call of step.calls) {
         checkInput();
-        if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [] };
+        if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [], acted };
         if (lookups.has(call.name)) {
           results.push({ id: call.id, text: LOOKUP_AFTER_ACTING, isError: true });
           continue;
@@ -126,7 +139,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           results.push({ id: call.id, text: skip, isError: true });
           continue;
         }
-        const action = parseCall(call, options.desktop.screen, options.browser !== undefined);
+        const action = parseCall(call, options.desktop.screen, options.browser !== undefined, picture);
         // Asked to do something, a small model often "answers" by asking whether it should. Once,
         // before anything happened, it's told to act instead; a second answer stands.
         if (!("error" in action) && action.type === "finish" && steps === 0 && !nudged) {
@@ -145,6 +158,9 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
         const browser = "error" in action ? undefined : browserFor(action);
         // Waiting for a page to load shows the page again.
         browsed ||= !!browser || (call.name === "browser" && options.browser !== undefined) || (!("error" in action) && action.type === "wait" && picture === "page");
+        const signature = JSON.stringify(action);
+        // Set once the action is really being done, past the refusals: only those failures count as repeats.
+        let attempted = false;
         try {
           if ("error" in action) throw new Error(action.error);
           if (!options.vision && !BLIND.has(action.type)) {
@@ -168,14 +184,13 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
             interval = setInterval(pollInput, 25);
           }
           checkInput();
-          if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [] };
+          if (options.canAct && !options.canAct()) return { text: "", model, outcome: "superseded", calls: [], acted };
           // Coordinates picked before seeing the screen, or after an earlier action in this batch changed it, are guesses.
           if (options.vision && call.toolset !== "computer" && aimed(action) && !current) {
             throw new Error(picture === "page"
               ? "Not executed: your last picture shows only the browser page, not the screen, so these coordinates are a guess. In the page, use the browser tool's numbers; otherwise take a screenshot first."
               : "Not executed: you have not seen the screen since it last changed, so these coordinates are a guess. Look at the new screenshot and choose them again.");
           }
-          const signature = JSON.stringify(action);
           // Waiting again for a slow app is fine; it's other repeats that mean the model is stuck.
           if (action.type !== "wait" && last?.action === signature && last.changed === false) {
             // A small model can ignore this and retry forever (tasks have no action limit). The third time, the task ends.
@@ -188,6 +203,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
             throw new Error(`Not executed: you just did exactly this and the ${browser ? "page" : "screen"} did not change. Try something different (another element, a keyboard shortcut, another way), or tell your host you could not do it.`);
           }
           if (!browser) guardAction(action, options.desktop.foreground());
+          attempted = true;
           options.onStatus(action);
           options.log(`computer action ${steps}: ${action.type}${action.type === "type" ? ` (${action.text.length} characters)` : action.type === "window" ? ` ${action.op}` : action.type === "browser" ? ` ${action.op.op}` : ""}`);
           let text = "OK";
@@ -208,12 +224,18 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
             changed.push(action);
             last = { action: signature, changed: null };
           }
+          ran(call, true);
           results.push({ id: call.id, text, ...(image ? { image } : {}) });
         } catch (error) {
           if (signal.aborted) throw error;
           const text = error instanceof Error ? error.message : String(error);
           options.log(`computer action failed: ${text}`);
           results.push({ id: call.id, text, isError: true });
+          if (attempted) {
+            ran(call, false);
+            // Once may be a refusal the next picture answers (a guessed element number); the same error twice is a loop.
+            last = { action: signature, changed: last?.action === signature && last.failed === text ? false : null, failed: text };
+          }
           skip = SKIPPED;
         }
       }
@@ -259,7 +281,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   } catch (error) {
     if (watcherFailure) throw watcherFailure;
     if (!signal.aborted) throw error;
-    return { text: "", model, outcome: "stopped", calls: [] };
+    return { text: "", model, outcome: "stopped", calls: [], acted };
   } finally {
     if (interval) clearInterval(interval);
     watch?.close();
