@@ -244,6 +244,23 @@ test("a page that didn't change is said so, and the third identical try ends the
   expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("the page did not change") });
 });
 
+test("a browser call that fails the same way is refused the second time and ends the task the third, like one that changes nothing", async () => {
+  const { browser, done } = fakeBrowser();
+  browser.run = async (action) => {
+    done.push(action);
+    throw new Error("no field is focused; give the field's number as ref");
+  };
+  const typing = () => browse({ action: "type", text: "gatos" });
+  const { session, received } = scripted(step(typing()), step(typing()), step(typing()), step(typing()), step(typing()));
+  const result = await run(session, new FakeDesktop(), { browser });
+  expect(done).toHaveLength(1);
+  expect(result).toMatchObject({ outcome: "done", text: "" });
+  expect(received[1]![0]).toMatchObject({ isError: true, text: expect.stringContaining("no field is focused") });
+  expect(received[2]![0]).toMatchObject({ isError: true, text: expect.stringContaining("you just did exactly this") });
+  expect(received[4]![0]!.text).toContain("Tell your host what you managed");
+  expect(received).toHaveLength(5);
+});
+
 test("waiting while browsing shows the page again and leaves the desktop to the player", async () => {
   const desktop = new FakeDesktop();
   const { browser } = fakeBrowser();
