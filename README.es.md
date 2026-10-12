@@ -164,6 +164,7 @@ en `%APPDATA%\LilithAICompanion` se conservan hasta que los borres.
 
 Ver [README.md](README.md#for-developers), [docs/BUILDING.md](docs/BUILDING.md) y
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md) (en inglés).
 
 ## Licencia
 

@@ -36,6 +36,9 @@ jobs:
           $version = (Get-Content package.json | ConvertFrom-Json).version
           if ("v$version" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} doesn't match package.json version $version" }
 
+      - name: CHANGELOG.md has this version
+        run: bun scripts/changelog.ts
+
       - run: pnpm install --frozen-lockfile
 
       - name: Typecheck and test
