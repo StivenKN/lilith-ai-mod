@@ -100,8 +100,8 @@ export class BrowserSession {
         return `Now on tab ${action.tab}.`;
       }
       case "closeTab": {
+        // The extension refuses a tab outside her group; this session only knows the tabs it has seen.
         const tab = action.tab === null ? await this.#current(signal) : this.#numbered(action.tab);
-        if (!this.#mine.has(tab)) throw new Error("Not closed: that tab isn't one you opened. Only close tabs marked (yours).");
         await this.#call("close", { tab }, signal);
         if (tab === this.#tab) this.#tab = null;
         return "Closed.";

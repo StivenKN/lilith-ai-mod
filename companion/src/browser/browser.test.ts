@@ -164,7 +164,7 @@ describe("browser session", () => {
   });
 
   test("open_url reuses her tab, a click that opens a tab is followed, and only her tabs close", async () => {
-    const { link, calls } = fakeLink({ click: () => ({ opened: 9 }) });
+    const { link, calls } = fakeLink({ click: () => ({ opened: 9 }), close: ({ tab }) => { if (tab !== 9) throw new BrowserError("notYours"); return {}; } });
     const session = new BrowserSession(link, { vision: false });
     expect(await session.open("https://example.com", signal)).toBe("Opened in a new tab.");
     await session.observe(signal);
