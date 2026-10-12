@@ -38,6 +38,8 @@ export interface ComputerTurnResult {
   acted: readonly PastCall[];
 }
 
+/** Actions per task. A small model can wander from page to page without end; the longest task seen done took 7. */
+const MAX_ACTIONS = 15;
 const MAX_ACTED_CALLS = 8;
 const MAX_ACTED_CHARS = 200;
 
@@ -153,7 +155,12 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           results.push({ id: call.id, text: "The task has ended. Now reply to your host, without calling tools." });
           continue;
         }
-        steps++;
+        if (++steps > MAX_ACTIONS) {
+          answer = "";
+          skip = ENDED;
+          results.push({ id: call.id, text: `Not executed. The task has taken ${MAX_ACTIONS} actions, so it has ended. Tell your host what you managed and where you got stuck, without calling tools.`, isError: true });
+          continue;
+        }
         custom ||= call.toolset !== "computer";
         const browser = "error" in action ? undefined : browserFor(action);
         // Waiting for a page to load shows the page again.
@@ -193,7 +200,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           }
           // Waiting again for a slow app is fine; it's other repeats that mean the model is stuck.
           if (action.type !== "wait" && last?.action === signature && last.changed === false) {
-            // A small model can ignore this and retry forever (tasks have no action limit). The third time, the task ends.
+            // A small model can ignore this and retry until the action limit. The third time, the task ends.
             if (++repeats >= 3) {
               answer = "";
               skip = ENDED;
