@@ -188,7 +188,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
       // Where the latest screenshot or page sits. The one before is blanked: each costs as much context as a long reply.
       let observation: { index: number; image: boolean } | undefined;
       return {
-        async next(results, http) {
+        async next(results, http, note) {
           if (quirks.has("no-tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
           for (const result of results) messages.push({ role: "tool", tool_call_id: result.id, content: `${result.isError ? "Error: " : ""}${result.text}` });
           const latest = results.findLast((result) => result.image || result.page);
@@ -201,6 +201,7 @@ export function createOpenAiProvider(options: OpenAiOptions): Provider {
               ? { role: "user", content: [{ type: "text", text }, { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from(latest.image).toString("base64")}` } }] }
               : { role: "user", content: text });
           }
+          if (note) messages.push({ role: "user", content: note });
           for (let attempt = 0; ; attempt++) {
             const body = buildBody({ ...request, temperature: stepTemperature(request, results), timeoutMs: http.timeoutMs });
             body.messages = messages;

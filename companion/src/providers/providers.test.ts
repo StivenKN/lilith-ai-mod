@@ -337,6 +337,35 @@ describe("past computer calls in the history", () => {
   });
 });
 
+describe("a note after her words", () => {
+  const note = "Not a reply: that describes a step.";
+  const said = 'Type "perros" in the search box.';
+
+  test("Ollama sends it as the player's message after her words", async () => {
+    const server = mock(() => Response.json({ message: { content: said } }));
+    const session = createProvider({ preset: "ollama", baseUrl: server.url, model: "qwen", apiKey: "" }, noop).agent(agentRequest);
+    await session.next([], http);
+    await session.next([], http, note);
+    expect(transcript.parse(server.bodies[1]).messages.slice(-2)).toEqual([{ role: "assistant", content: said }, { role: "user", content: note }]);
+  });
+
+  test("OpenAI sends it as the player's message after her words", async () => {
+    const server = mock(() => completion(said));
+    const session = openai(server.url).agent(agentRequest);
+    await session.next([], http);
+    await session.next([], http, note);
+    expect(transcript.parse(server.bodies[1]).messages.slice(-2)).toMatchObject([{ role: "assistant", content: said }, { role: "user", content: note }]);
+  });
+
+  test("Claude sends it as the player's message after her words", async () => {
+    const server = mock(() => Response.json({ id: "msg", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: said }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    const session = createProvider({ preset: "anthropic", baseUrl: server.url, model: "claude-opus-5-5", apiKey: "test" }, noop).agent({ ...agentRequest, vision: false });
+    await session.next([], http);
+    await session.next([], http, note);
+    expect(transcript.parse(server.bodies[1]).messages.slice(-2)).toEqual([{ role: "assistant", content: [{ type: "text", text: said }] }, { role: "user", content: note }]);
+  });
+});
+
 describe("computer sessions", () => {
   test("llama.cpp text-only metadata avoids sending an image probe", async () => {
     const server = mock(() => { throw new Error("An image probe must not reach a text-only model"); }, { modalities: { vision: false } });

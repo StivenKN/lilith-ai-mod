@@ -38,6 +38,8 @@ export interface ComputerTurnResult {
   acted: readonly PastCall[];
 }
 
+/** Actions per task. A small model can wander from page to page without end; the longest task seen done took 7. */
+const MAX_ACTIONS = 15;
 const MAX_ACTED_CALLS = 8;
 const MAX_ACTED_CHARS = 200;
 
@@ -52,6 +54,13 @@ const aimed = (action: Action) => action.type === "move" || action.type === "dra
 
 const SKIPPED = "Not executed: an earlier computer action in this turn failed.";
 const ENDED = "Not executed: you already ended the task.";
+/**
+ * qwen3-vl writes the next step for the player instead of doing it ('Type "perros" in the search
+ * box.'), in English whatever the conversation's language. Sent back once, it did the step in 38
+ * of 40 replays; no wording of the prompt moved it past 10 of 40. Written twice, it's no reply.
+ */
+const WRITTEN_STEP = /^\s*Type\s+["“]/;
+const DO_THE_STEP = "Not a reply: that describes a step. If the task isn't done, call the tool for that step now. If it is done or cannot be done, stop calling tools and reply to your host in their language.";
 const LOOKUP_AFTER_ACTING = "Not executed: your host's accounts cannot be looked in after acting on the PC. Reply to your host now with what you have, without calling tools.";
 
 /**
@@ -85,6 +94,8 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   let answer: string | null = null;
   let nudged = false;
   let repeats = 0;
+  let note: string | undefined;
+  let sentBack = false;
   const acted: PastCall[] = [];
   /** Claude's own toolset is left out: no other model could replay it. */
   const ran = (call: ToolCall, ok: boolean) => {
@@ -113,9 +124,17 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   try {
     for (;;) {
       checkInput();
-      const step = await options.session.next(results, { ...options.http, signal });
+      const step = await options.session.next(results, { ...options.http, signal }, note);
+      note = undefined;
       model = step.model;
       checkInput();
+      if (!step.calls.length && answer === null && WRITTEN_STEP.test(step.text)) {
+        if (sentBack) return { text: "", model, outcome: "done", calls: [], acted };
+        sentBack = true;
+        note = DO_THE_STEP;
+        results = [];
+        continue;
+      }
       // After terminate or answer the model only has to reply. More calls end the task anyway.
       if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [], acted };
       // A lookup is terminal and answered without tools, so nothing in its batch runs: not a PC
@@ -153,7 +172,12 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           results.push({ id: call.id, text: "The task has ended. Now reply to your host, without calling tools." });
           continue;
         }
-        steps++;
+        if (++steps > MAX_ACTIONS) {
+          answer = "";
+          skip = ENDED;
+          results.push({ id: call.id, text: `Not executed. The task has taken ${MAX_ACTIONS} actions, so it has ended. Tell your host what you managed and where you got stuck, without calling tools.`, isError: true });
+          continue;
+        }
         custom ||= call.toolset !== "computer";
         const browser = "error" in action ? undefined : browserFor(action);
         // Waiting for a page to load shows the page again.
@@ -193,7 +217,7 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
           }
           // Waiting again for a slow app is fine; it's other repeats that mean the model is stuck.
           if (action.type !== "wait" && last?.action === signature && last.changed === false) {
-            // A small model can ignore this and retry forever (tasks have no action limit). The third time, the task ends.
+            // A small model can ignore this and retry until the action limit. The third time, the task ends.
             if (++repeats >= 3) {
               answer = "";
               skip = ENDED;

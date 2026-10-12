@@ -9,6 +9,7 @@ import type { AgentSession, AgentStep, ToolCall, ToolResult } from "../providers
 const call = (name: string, input: unknown): ToolCall => ({ id: crypto.randomUUID(), name, input });
 const act = (input: Record<string, unknown>) => call("computer_use", input);
 const step = (...calls: ToolCall[]): AgentStep => ({ calls, text: calls.length ? "" : "Finished.", model: "test", finish: "stop" });
+const said = (text: string): AgentStep => ({ calls: [], text, model: "test", finish: "stop" });
 function scripted(...steps: AgentStep[]) {
   const received: ToolResult[][] = [];
   const session: AgentSession = { async next(results) { received.push([...results]); return steps.shift() ?? step(); } };
@@ -280,6 +281,31 @@ test("a browser call that fails the same way twice is refused the next time and 
   expect(received[3]![0]).toMatchObject({ isError: true, text: expect.stringContaining("you just did exactly this") });
   expect(received[5]![0]!.text).toContain("Tell your host what you managed");
   expect(received).toHaveLength(6);
+});
+
+test("a step written out instead of done is sent back once with a note, and then done", async () => {
+  const { browser, done } = fakeBrowser();
+  const steps = [step(call("open_url", { url: "wikipedia.org" })), said('Type "perros" in the search box.'), step(browse({ action: "type", text: "perros", submit: true })), said("[feliz] Ya busqué perros.")];
+  const notes: Array<string | undefined> = [];
+  const session: AgentSession = { async next(_results, _http, note) { notes.push(note); return steps.shift() ?? step(); } };
+  expect(await run(session, new FakeDesktop(), { browser })).toMatchObject({ outcome: "done", text: "[feliz] Ya busqué perros." });
+  expect(done).toContainEqual({ op: "type", ref: null, text: "perros", submit: true });
+  expect(notes.map((note) => note !== undefined)).toEqual([false, false, true, false]);
+});
+
+test("a step written out twice is no reply: the player never sees it", async () => {
+  const { session } = scripted(step(call("open_url", { url: "wikipedia.org" })), said('Type "perros" in the search box.'), said('Type "perros" in the search box and press Enter.'));
+  expect(await run(session, new FakeDesktop(), { browser: fakeBrowser().browser })).toMatchObject({ outcome: "done", text: "" });
+});
+
+test("a task ends after 15 actions, even when each one changes the page", async () => {
+  const { browser, done } = fakeBrowser();
+  const { session, received } = scripted(...Array.from({ length: 20 }, () => step(browse({ action: "click", ref: 1 }))));
+  const result = await run(session, new FakeDesktop(), { browser });
+  expect(done).toHaveLength(15);
+  expect(result).toMatchObject({ outcome: "done", text: "" });
+  expect(received[16]![0]).toMatchObject({ isError: true, text: expect.stringContaining("Tell your host what you managed") });
+  expect(received).toHaveLength(17);
 });
 
 test("a click refused as a guess runs when tried again after the page was shown", async () => {

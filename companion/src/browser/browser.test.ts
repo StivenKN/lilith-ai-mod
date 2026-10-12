@@ -164,7 +164,7 @@ describe("browser session", () => {
   });
 
   test("open_url reuses her tab, a click that opens a tab is followed, and only her tabs close", async () => {
-    const { link, calls } = fakeLink({ click: () => ({ opened: 9 }) });
+    const { link, calls } = fakeLink({ click: () => ({ opened: 9 }), close: ({ tab }) => { if (tab !== 9) throw new BrowserError("notYours"); return {}; } });
     const session = new BrowserSession(link, { vision: false });
     expect(await session.open("https://example.com", signal)).toBe("Opened in a new tab.");
     await session.observe(signal);
@@ -173,6 +173,12 @@ describe("browser session", () => {
     expect(await session.run({ op: "click", ref: 1 }, signal)).toContain("opened a new tab");
     await expect(session.run({ op: "closeTab", tab: 1 }, signal)).rejects.toThrow("isn't one you opened");
     await expect(session.open("http://localhost:47321/", signal)).rejects.toThrow("settings page");
+  });
+
+  test("on a later turn, before she has looked, the tab she's on closes when it's hers, and the browser decides", async () => {
+    const { link, calls } = fakeLink({ close: ({ tab }) => { if (tab !== 2) throw new BrowserError("notYours"); return {}; } });
+    expect(await new BrowserSession(link, { vision: false }).run({ op: "closeTab", tab: null }, signal)).toBe("Closed.");
+    expect(calls.at(-1)).toEqual({ op: "close", input: { tab: 2 } });
   });
 
   test("an unchanged page is reported, and a closed tab falls back to the player's", async () => {

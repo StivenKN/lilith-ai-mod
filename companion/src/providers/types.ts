@@ -108,7 +108,8 @@ export interface AgentStep extends Pick<ChatResult, "text" | "model" | "finish">
 
 /** One computer turn. The adapter owns its transcript, including provider-specific fields. */
 export interface AgentSession {
-  next(results: readonly ToolResult[], http: HttpOptions): Promise<AgentStep>;
+  /** `note`: said to the model as the player's message after its last words, when they weren't a reply. */
+  next(results: readonly ToolResult[], http: HttpOptions, note?: string): Promise<AgentStep>;
 }
 
 /** Every failure is classified so the user sees a specific, fixable message instead of a stock line. */
