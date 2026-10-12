@@ -282,6 +282,16 @@ test("a browser call that fails the same way twice is refused the next time and 
   expect(received).toHaveLength(6);
 });
 
+test("a task ends after 15 actions, even when each one changes the page", async () => {
+  const { browser, done } = fakeBrowser();
+  const { session, received } = scripted(...Array.from({ length: 20 }, () => step(browse({ action: "click", ref: 1 }))));
+  const result = await run(session, new FakeDesktop(), { browser });
+  expect(done).toHaveLength(15);
+  expect(result).toMatchObject({ outcome: "done", text: "" });
+  expect(received[16]![0]).toMatchObject({ isError: true, text: expect.stringContaining("Tell your host what you managed") });
+  expect(received).toHaveLength(17);
+});
+
 test("a click refused as a guess runs when tried again after the page was shown", async () => {
   const { browser, done } = fakeBrowser();
   const run1 = browser.run;
