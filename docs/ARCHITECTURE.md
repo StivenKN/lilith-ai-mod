@@ -108,6 +108,9 @@ player can edit or clear them.
   - Tokens are estimated at 3 characters each (one per CJK character).
   - Every turn counts as at least 50 tokens, because a small model copies its own replies however
     short they are.
+  - A reply after a PC turn keeps the calls that ran (`acted`): each call's name and input, at most
+    8, strings cut to 200 characters, and a flag when it failed. Results and pictures are not kept.
+    Its calls count toward the budget, and an exchange that acted is never flagged as a repeat.
 - **The summary.** Locally, once the turns after it pass 10 exchanges (1k tokens), the oldest are
   folded into it, down to the last 4 exchanges. Online, that's past 6k tokens, down to 2.5k. A fold
   always ends on one of her replies. Each pass writes 1 to 4 short lines of plain fact about the
@@ -277,7 +280,10 @@ Each adapter owns one typed tool transcript. OpenAI-compatible servers preserve 
 fields, including Gemini thought signatures. Ollama gets capabilities from `/api/show`; local
 llama.cpp servers expose `/props`. Other compatible servers get a cached two-color vision check.
 Capability checks do not capture the desktop. Tool sessions retain the same conversation history as
-ordinary chat. OpenAI and Ollama keep only the latest screenshot; Claude transcripts are
+ordinary chat, plus the past calls of the tools they offer: each comes back as a tool call with the
+result "OK" or "Error", before her words. Shown PC requests answered in words alone, a 4B model
+answers new ones in words too (0/12 acted, 10/12 with the calls replayed). Ordinary chat sends her
+words only. OpenAI and Ollama keep only the latest screenshot; Claude transcripts are
 append-only. Compatibility errors before any action fall back to ordinary chat, which retains
 empty-reply and repetition retries.
 
@@ -311,11 +317,15 @@ missed click instead of claiming success:
 Two guards turn a small model's typical mistakes into a message instead of a wrong click:
 - Coordinates picked before the model has seen the screen, or after an earlier action in the same
   batch changed it, are refused, and the new screenshot comes with the error.
-- An action identical to the previous one, after which the screen did not change, is refused with a
-  nudge to try another way. Waiting again is exempt: a slow app often looks the same while it loads.
-  A small model can ignore the nudge and retry forever, since tasks have no action limit, so the
-  third refusal ends the task, and the model is asked to tell its host what it managed and where it
-  got stuck.
+- An action identical to the previous one, after which the screen did not change, or which failed
+  twice with the same error, is refused with a nudge to try another way. Waiting again is exempt: a
+  slow app often looks the same while it loads. A small model can ignore the nudge, so the third
+  refusal ends the task, and the model is asked to tell its host what it managed and where it got
+  stuck. One failure doesn't count, since an element number refused as a guess may be right once
+  the page has been shown.
+
+A task also ends after 15 actions, the same way. A small model can wander from page to page without
+repeating itself; the longest task seen done took 7.
 
 `terminate` or `answer` ends the task: the model is asked for its reply, and further calls end the
 turn with the answer as the reply.
@@ -326,7 +336,7 @@ other apps or silently time out during capture or garbage collection. A new mess
 that has acted; a superseded turn that has not acted still answers without tools. Settings changes
 also prevent further actions while preserving ordinary pending replies. Disconnect and shutdown stop
 the turn, including provider retry waits. Watcher failures report an error. A stopped task needs a
-new request to continue. Only the user message and final reply enter memory.
+new request to continue. Memory keeps the user message, the final reply and the calls that ran.
 
 ### Windows
 
@@ -441,7 +451,8 @@ page.js        injected on demand            browser/format.ts   raw page facts 
   wall) is refused naming the cover, which gets a number. After a page picture, screen coordinates
   are refused as guesses. A call with a ref and no coordinate goes to the browser whatever the tool
   is called: taken as a desktop click, `{"name": "click", "arguments": {"ref": 12}}` would land
-  wherever the cursor is. Playwright MCP's and browser-use's names are accepted.
+  wherever the cursor is. After a page picture, `type` or `key` without a ref goes to the page's
+  focused field, not to whatever window has focus. Playwright MCP's and browser-use's names are accepted.
 - **Acting.** `type` clicks the field, selects its text and inserts the new text. On a dropdown it
   chooses the option by its words (accents and case ignored) or lists the real options. Keys go to
   the page, not Chrome's window, so browser shortcuts are refused with what to use instead. A click
