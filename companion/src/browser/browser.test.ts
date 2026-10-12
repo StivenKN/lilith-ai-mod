@@ -175,6 +175,12 @@ describe("browser session", () => {
     await expect(session.open("http://localhost:47321/", signal)).rejects.toThrow("settings page");
   });
 
+  test("on a later turn, before she has looked, the tab she's on closes when it's hers, and the browser decides", async () => {
+    const { link, calls } = fakeLink({ close: ({ tab }) => { if (tab !== 2) throw new BrowserError("notYours"); return {}; } });
+    expect(await new BrowserSession(link, { vision: false }).run({ op: "closeTab", tab: null }, signal)).toBe("Closed.");
+    expect(calls.at(-1)).toEqual({ op: "close", input: { tab: 2 } });
+  });
+
   test("an unchanged page is reported, and a closed tab falls back to the player's", async () => {
     const looked: Array<number | null> = [];
     const { link } = fakeLink({
