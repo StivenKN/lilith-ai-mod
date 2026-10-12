@@ -22,6 +22,7 @@ import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { checksumLine } from "../src/updater.ts";
 import { zipTar } from "../src/zip.ts";
+import { changesIn } from "./changelog.ts";
 import { extractBepInEx, fetchPinned, run, UNITY_LIBS } from "./pinned.ts";
 
 const { values } = parseArgs({
@@ -39,6 +40,11 @@ for (const path of [values.plugin, values.exe]) {
 }
 
 const version = pkg.version;
+const changes = changesIn(await Bun.file(resolve("..", "CHANGELOG.md")).text(), version);
+if (!changes) {
+  console.error(`CHANGELOG.md has no changes under "## ${version}"`);
+  process.exit(1);
+}
 const name = `LilithAICompanion-${version}`;
 const releaseDir = resolve("dist", "release");
 const root = join(releaseDir, name);
@@ -89,6 +95,10 @@ await writeFile(
           "",
         ]
       : []),
+    "## What changed",
+    "",
+    changes,
+    "",
     "## Instalar (ES)",
     "",
     `1. Descarga **${name}.zip** (abajo, en *Assets*) y extráelo en una carpeta.`,
