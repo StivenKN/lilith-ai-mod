@@ -139,6 +139,8 @@ Releases are built and published by `.github/workflows/release.yml` on Windows, 
    - `plugin/LilithAICompanion.csproj` `<Version>` and `Plugin.Version` in `plugin/src/Plugin.cs`
      (plain `x.y.z`).
    - If the protocol changed, also bump `PROTOCOL_VERSION` / `Protocol.Version` on both sides.
+   - Move the lines under `## Unreleased` in `CHANGELOG.md` to a new `## <version> (<date>)` heading
+     below it. The workflow fails when that heading has no lines.
 2. Merge to `main`.
 3. Tag and push. The tag must match `package.json`:
 
@@ -152,7 +154,8 @@ Releases are built and published by `.github/workflows/release.yml` on Windows, 
    - runs the bridge harness;
    - assembles `LilithAICompanion-<version>.zip` with the pinned, checksum-verified BepInEx and
      Unity libraries;
-   - publishes the GitHub release with Spanish and English install notes.
+   - publishes the GitHub release. Its notes list this version's lines from `CHANGELOG.md` above
+     the Spanish and English install steps.
 
    Tags with a `-` (e.g. `-beta.1`) are published as pre-releases.
 

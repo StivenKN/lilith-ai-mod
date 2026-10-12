@@ -145,6 +145,7 @@ bun scripts/release.ts --plugin <path/to/LilithAICompanion.dll>
 ```
 
 The plugin builds with or without the game installed; releases are cut by pushing a version tag. See [docs/BUILDING.md](docs/BUILDING.md).
+What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 How the pieces fit: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### Credits
