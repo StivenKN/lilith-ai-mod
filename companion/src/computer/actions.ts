@@ -117,14 +117,14 @@ function computerUse(vision: boolean): ToolSpec {
 // a 4B model picks [12] from a list far more reliably than a spot on a screenshot, and a model
 // without vision can browse at all.
 const browserActions = {
-  click: "Click element `ref`: a link, button, checkbox, tab or menu item.",
+  click: "Click element `ref`: a link, button, checkbox or menu item.",
   type: "Replace the text of field `ref` with `text` (without `ref`, type into the focused field). In a dropdown list, choose the option named `text`. Set `submit` to press Enter afterwards, as in a search box.",
   key: 'Press keys on the page, such as ["escape"], ["tab"] or ["ctrl", "a"].',
   scroll: "Scroll the page `direction` by about one screen.",
   read: "Get the page's text from where it is scrolled to, to read it or answer about it.",
   back: "Go back to the previous page in this tab.",
   switch_tab: "Show tab number `tab`.",
-  close_tab: "Close tab number `tab`, or the current one. Only tabs you opened.",
+  close_tab: "Close a browser tab: number `tab` from the Tabs line at the top of the page, or the current tab without `tab`. Only tabs you opened. To close several, close them one at a time.",
 } as const;
 type BrowserActionName = keyof typeof browserActions;
 const browserActionNames = Object.keys(browserActions) as BrowserActionName[];
