@@ -109,7 +109,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
       const transcript: BetaMessageParam[] = [];
       let pending: ToolCall[] = [];
       return {
-        async next(results, http) {
+        async next(results, http, note) {
           if (off.has("tools")) throw new ProviderError("no_tools", "This model does not accept function tools");
           if (results.length) {
             // An error result may hold only text, so its screenshot follows the results instead.
@@ -126,6 +126,7 @@ export function createAnthropicProvider(options: AnthropicOptions): Provider {
             });
             transcript.push({ role: "user", content: [...content, ...after] });
           }
+          if (note) transcript.push({ role: "user", content: note });
           for (let attempt = 0; ; attempt++) {
             const toolset = request.vision && TOOLSET_MODELS.test(options.model) && !off.has("toolset");
             const tools: BetaToolUnion[] = functions(toolset).map((tool) => ({ name: tool.name, description: tool.description, input_schema: { ...toolSchema(tool), type: "object" } }));

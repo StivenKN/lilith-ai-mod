@@ -54,6 +54,13 @@ const aimed = (action: Action) => action.type === "move" || action.type === "dra
 
 const SKIPPED = "Not executed: an earlier computer action in this turn failed.";
 const ENDED = "Not executed: you already ended the task.";
+/**
+ * qwen3-vl writes the next step for the player instead of doing it ('Type "perros" in the search
+ * box.'), in English whatever the conversation's language. Sent back once, it did the step in 38
+ * of 40 replays; no wording of the prompt moved it past 10 of 40. Written twice, it's no reply.
+ */
+const WRITTEN_STEP = /^\s*Type\s+["“]/;
+const DO_THE_STEP = "Not a reply: that describes a step. If the task isn't done, call the tool for that step now. If it is done or cannot be done, stop calling tools and reply to your host in their language.";
 const LOOKUP_AFTER_ACTING = "Not executed: your host's accounts cannot be looked in after acting on the PC. Reply to your host now with what you have, without calling tools.";
 
 /**
@@ -87,6 +94,8 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   let answer: string | null = null;
   let nudged = false;
   let repeats = 0;
+  let note: string | undefined;
+  let sentBack = false;
   const acted: PastCall[] = [];
   /** Claude's own toolset is left out: no other model could replay it. */
   const ran = (call: ToolCall, ok: boolean) => {
@@ -115,9 +124,17 @@ export async function runComputerTurn(options: ComputerTurnOptions): Promise<Com
   try {
     for (;;) {
       checkInput();
-      const step = await options.session.next(results, { ...options.http, signal });
+      const step = await options.session.next(results, { ...options.http, signal }, note);
+      note = undefined;
       model = step.model;
       checkInput();
+      if (!step.calls.length && answer === null && WRITTEN_STEP.test(step.text)) {
+        if (sentBack) return { text: "", model, outcome: "done", calls: [], acted };
+        sentBack = true;
+        note = DO_THE_STEP;
+        results = [];
+        continue;
+      }
       // After terminate or answer the model only has to reply. More calls end the task anyway.
       if (!step.calls.length || answer !== null) return { text: step.text || answer || "", model, outcome: "done", calls: [], acted };
       // A lookup is terminal and answered without tools, so nothing in its batch runs: not a PC

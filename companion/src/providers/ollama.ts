@@ -133,7 +133,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
       // The latest screenshot or page. The one before is blanked: each costs as much context as a long reply.
       let observation: Message | undefined;
       return {
-        async next(results, http) {
+        async next(results, http, note) {
           if (noTools) throw new ProviderError("no_tools", "This Ollama model does not accept tools");
           for (const result of results) messages.push({ role: "tool", tool_name: pending.find((call) => call.id === result.id)?.name ?? "", content: `${result.isError ? "Error: " : ""}${result.text}` });
           const latest = results.findLast((result) => result.image || result.page);
@@ -149,6 +149,7 @@ export function createOllamaProvider(options: OllamaOptions): Provider {
             };
             messages.push(observation);
           }
+          if (note) messages.push({ role: "user", content: note });
           let temperature = stepTemperature(request, results);
           for (let attempt = 0; ; attempt++) {
             const useThink = !noThinkModels.has(options.model);

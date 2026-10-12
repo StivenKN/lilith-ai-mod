@@ -330,6 +330,12 @@ repeating itself; the longest task seen done took 7.
 `terminate` or `answer` ends the task: the model is asked for its reply, and further calls end the
 turn with the answer as the reply.
 
+qwen3-vl often stops after opening a site and writes the next step for the player instead of doing
+it ('Type "perros" in the search box.'), in English whatever the conversation's language. Such a
+reply is sent back once, with a note asking it to do the step or reply; the adapters send the note as
+the player's message. Written a second time, it's dropped, so the player never sees it and memory
+never replays it.
+
 A message-only window receives queued Raw Input during computer turns. It ignores Lilith's marked
 input; player keyboard or mouse input aborts actions and model requests. Raw Input does not block
 other apps or silently time out during capture or garbage collection. A new message stops a turn
